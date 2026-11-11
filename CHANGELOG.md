@@ -2,6 +2,59 @@
 
 > 倒序排列,新版本条目在最上面。条目格式:`## vX.Y.Z — YYYY-MM-DD` + 类型(feat / fix / docs / chore)+ 要点 + 相关链接。
 > 纪律见 AGENTS.md「变更记录纪律」:发版前先更新本文件并随版本提交;事故复盘、复现与真机验证记录也记在这里。
+## v0.42.1 — 2026-11-11
+
+**类型**:fix + feat + perf(会话配额改为窗口语义并逐段展开、缩进与配色贴近官方、拖拽指示器统一为官方插入线、工作区排序即时落位、自动标题不再造分组、新建会话定位、逐会话退出 / 分组)
+
+### fix(会话配额与展开)
+- **配额改为按节点独立计算**:此前 `limitSessionsForRender` 在工作区整棵会话树之前对全量扁平列表限额,导致子分组内的会话吃掉根层配额(开启「展开 5 个」时根层只剩 1 行)。现在工作区自己的直属会话与每一个会话分组各自拥有同一个 `prefs.sessionLimit` 额度,互不挤占。
+- **逐段展开,最后一次全展开**:底部 overflow 行不再一次展开全部,而是每次 +sessionLimit(官方 `raiseWatermarks` 语义);剩余隐藏数不超过一个额度时直接全展开。全部展开后该行变成「收起」,点击回到基础额度,不再是只能刷新恢复的死路。
+- **折叠即回基础额度**:折叠工作区、名称/磁盘分组或会话分组会丢弃其(含子树)已抬升的水位,重新展开时回到基础数量——对齐官方 `dropWatermarks` 行为。水位是组件瞬态,不写 store。
+
+### fix(配额只抬水位,不重排列表)
+- **根因**:`limitSessionsForRender` 把列表拆成 keep / idle 两段后返回 `[...keep, ...idle.slice(0, limit)]`。当前会话进入 keep 集(官方 attention 语义),于是**打开窗口内的任一会话都会跳到该节点最顶部**,同时它空出的 idle 配额槽位又被尾部下一行补上 ⇒ 可见行 5 → 6、隐藏数 6 → 5(用户截图实测:dsh-v0.2.1-rc.3 从第 3 位跳到第 1 位,底部「展开 6 个会话」变「展开 5 个会话」)。
+- **修法**:改用官方 `watermarkRows` / `requiredWatermark` 语义——attention 行(running / 子代理 / pending / completed / 当前会话,限 `SESSION_ATTENTION_WINDOW`=50 内,加 pinned)只把水位抬到**自身位置**,可见行始终是「列表顺序里的前 watermark 条非 blank」。打开窗口内的会话因此不再改序、不再改可见行数;打开窗口外的会话(从空态选择器等入口)只把水位抬到它那一行。
+- blank 占位行仍始终可见且不占额度;水位上限/「展开 +N」「收起」交互不变。
+
+### fix(缩进与配色贴近官方)
+- **直属会话不再多缩一层**:`renderSessionTree` 直接使用工作区自身 depth(官方 `projectRow`/`sessionRow` 共用同一个 `--dsh-workspace-indent`),会话与工作区文字同一条 34px 图标基线;只有会话子分组每级 +12px。
+- **自动配色只染图标**:自动分配的 `auto:N` 槽位色改为写 `--bw-auto-color` 只给工作区图标着色,行标题回到官方的 `label-primary`;手动 hex 颜色仍按原行为染整行文字。
+- **行样式常量对齐官方**:行间距 1px + 容器 4px 内边距 + `scrollbar-gutter:stable`、行内动作 24px 命中区(`margin:-4px`)、键盘模态 `focus-within` 显示动作条并让出计数/时间、overflow 行 28px 且从 34px 图标基线起缩进、计数改用 `label-tertiary`、时间与标题留白按官方 6/6。暗色 hover/current 的压暗强度是 dsh-any-background 的有意偏离,保持不变。
+
+### fix(拖拽指示器统一为官方插入线)
+- **两套指示器统一**:此前工作区 / 分组行用「抽屉空位」(slot 类把行 padding 撑高一整个行高 + 10% 品牌底纹 + 行高过渡),会话行用 v0.3.0 的 12px 渐变插入带;同一次拖拽里出现两种反馈。
+- **改为官方形态**:所有排序目标共用同一条 12px 插入线——官方 `Rows.module.css` 的三层渐变原文(两个 5×7 斜角笔头 + 4px 内缩的 2px 横线)、绝对定位 `top/bottom:-7px` 覆盖在行边界上,类名统一为 `bw-drop-before` / `bw-drop-after`,**不参与布局**。
+- **几何改为官方 `rowHalf`**:中点二分(clamp 到行外返回 null),逐帧实读 `getBoundingClientRect`;删除 `originalBoxOf` / `pointerInRowBox` 与 `slotOpen` 记忆。旧抽屉会放大被测量的盒子,静置指针落进自己撑开的 padding 里导致判据翻转(「抽搐」);overlay 不改布局,这正是官方方案稳定的原因。可放入容器的 INTO 三段判定(30/40/30)保留,只读同一份实时 rect。
+- `bw-drop-into` / `-strong` 分组蓝框保留(放入分组是本插件独有能力,官方没有)。
+
+### perf(工作区排序即时落位)
+- **根因(用户报「手动排序工作区的延迟明显比会话大」)**:一个层级只要写过一次 `folderOrder` token(第一次工作区拖拽后必然写入),树就按 token 渲染,Host client model 自己的乐观 insert(`insertOrder` / `installOrder` 在 RPC 之前执行)无法移动行;旧代码只在 `insertWorkspaceBefore` 的 `.then()` 里写 token ⇒ 鼠标松开到行换位之间隔着一次 Host 往返。Host 的 `insertBefore` 走 `enqueueOperation`(每次先 `recoverPendingMutation`)+ `setState` 重写**整个 global 注册表状态**,而 `insertSessionBefore` 只更新单条 workspace record——这就是两者手感差异的来源。
+- **修法**:`commitWorkspaceDrop` 在发请求**之前**用 `nextLevelTokens` 算出新的 token 列表并 `setFolderOrder`(mouseup 即落位),把旧列表留作失败回滚点;RPC 成功后的迟到写入整体跳过。仅对「同层 + 同磁盘 + 该层已有 token 列表」生效:注册表序的层本来就跟随 model 的乐观序,跨组 / 跨层的 drop 会先改标题、目标层的 token 只能在落地后才算得出来。
+- `writeLevelOrder` 拆成纯 token 计算(`nextLevelTokens`,不写 store)+ 持久化包装,两处共用同一套「移除源 token、按 before/after 插入目标旁」的规则。
+
+### fix(自动标题不再造分组)
+- **来源缺失时改看形状**:宿主投影 `betterWorkspace/titleSource` 只存在于注册之后写过的检查点(本机 1858 个会话缓存里只有 32 个带该键),此前 `groupsAllowedFor` 对 `undefined` 一律放行分组,于是回显首条消息的自动标题(「角色：资深前端/插件 UI 评审」「你是文档/账本核对员。任务 id」「你是 DSH 插件 @deepseek-ai/dsh-letta」)被切成伪目录。
+  现在 `groupsAllowedFor(summary, title)` 对缺失来源要求 `/` 前那段是 **slug 形状**(字母数字开头、1..32 位、只含字母数字与 `._@+#-`);user 来源照旧放行,fallback/provider/显式 null 一律平铺。
+- **用真实缓存抽样验证**:把该判据跑在本机 52 个含 `/` 的会话标题上,43 个句子型自动标题全部平铺、零既有分组回归;9 个 user 来源分组里 8 个是真正自建分组(`dsh-plugin-find/…`、`dsh-debug/…`)全部保留,余下 1 个 `横向对比/沙箱改进` 是旧版误分组的产物,见下节开关。
+
+### fix(graft 只接用户前缀,标题不再被旧前缀掩盖)
+- 标题缓存条目新增 `keepPrefix`:只有「标题自带 `/` 且来源为 user」或「来源缺失但 slug 形状」才为 true;自动叶子改名才允许 graft 出 `display`。
+- `rowTitleOf` 仅在 `keepPrefix === true` **且**当前 wire 来源不是 user 时返回 remembered display。旧实现按形状无条件 graft:宿主已把 `为什么你用 subagents/agent 团队` 改成 `轮询 wait_agent 的依据质疑`(source=user)后,列表仍显示旧前缀,且侧栏多出一个用户从未建过的分组。旧 localStorage 条目没有该字段 ⇒ 不 graft,升级后自愈。
+
+### fix(会话标题可逐条退出 / 分组)
+- **历史误分组在投影上无法识别**:早年版插件经 `renameSession` 把分组前缀写进标题,宿主因此把「自动标题被加了前缀」记成 `source=user`,与用户显式改名完全同形。实测样本:会话 `session-0bb9d32f-5902-49ea-b5b4-767b2f014a8d`(dsh-win-multi-bash 工作区)的标题事件是 seq14 fallback「你现在有几个shell可用」→ seq16 provider「可用的shell数量询问」→ **seq545「横向对比/沙箱改进」,messageSeqs 为空、source.kind = user**(2026-10-18 工程 turn)。⇒ 上节的 slug 形状判据只作用于「来源缺失」,对这类 user 来源无效。
+- **修法**:视图 store 新增 `sessionFlat`(sessionId → true)与 `setSessionFlat(id, on)`;两处会话行构建的 `allowGroups` 改为 `!flatMap[id] && groupsAllowedFor(...)`,`buildSessionTree` 直接读行的 `allowGroups`,**标题一字不改、只是不再拆层**。开关可逆:再点一次恢复分组,不产生迁移、不写宿主。
+- **入口**:会话右键菜单在「分组开关开启且标题含 /」时出现一项,按当前状态显示「不按 / 分组」(本地 id `flat-toggle` / 官方共享菜单 `bw-flat-toggle`)或「恢复 / 分组」;两态都可切换(此前 `allowGroups === false` 直接等于"没有入口",误分组没有任何出路)。官方菜单桥 `allowGroups` 先查该表,并新增 `flatOf` / `setFlat`。
+- **词典**:21 门语言各加 `menu.flatSession` / `menu.groupSession` 两键,逐门键集对齐由冒烟强制。
+
+### feat(新工作区与新建会话定位)
+- 通过侧栏或对话空态添加工作区后,树自动展开其祖先(名称分组 / 磁盘父工作区)并把该行 `scrollIntoView({ block: 'nearest' })`,不再落在视口外。搜索与单列表视图下清除待定位状态。
+- 新建工作区(侧栏 / 对话空态)与工作区行 `+` 新建会话后,除展开祖先分组,还会把**新会话行**滚进视口:reveal effect 用 `owner.sessionIds.indexOf(currentId)` 认出刚建的 blank 会话(它只有 current 时绘制),查 `[data-row-key="session:<id>"]` 并 `scrollIntoView({ block: 'nearest' })`;宿主还没发布成员时等 1.2s 再退回工作区行,8s 上限。
+
+### 验证
+- 冒烟 `node tests/smoke.mjs`(等价 `npm test`):94 项全绿,0 fail;守卫覆盖按节点配额与水位窗口(打开窗口内会话不重排、不多出一行)、水位数学(5→10→Infinity、额度 0)、折叠清理与「收起」行、缩进常量、自动色只染图标、slug 形状判据矩阵、graft 来源门控(含幽灵分组回归)、reveal 目标、flat 开关与 21 门键集对齐、工作区排序的乐观写(写在前、RPC 在后、失败回滚、迟到写入跳过)。
+- `node --check` 三个 client 文件与 `node --check tests/smoke.mjs`、`git diff --check` 通过。
+- 真机:行序与可见行数由用户实拍截图确认(同一节点 5↔6 行、行 3↔1 位);本会话宿主 127.0.0.1:32742 不能重启(早期报过 `ERR_CACHE_READ_FAILURE` 白屏),其余行为以静态守卫 + 纯函数断言 + 真实缓存抽样为准,待用户重启复验。
 
 ## v0.42.0 — 2026-11-10
 

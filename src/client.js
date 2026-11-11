@@ -51,16 +51,36 @@ window.__ModuleLoader__.load({
     // Host-recorded title provenance (src/title-source.js). A fresh session's
     // fallback/provider title never becomes a hierarchy; only a user rename or
     // an explicit grouping action may form groups. Undefined means the host
-    // projection is not there (old cold cache), so the display falls back to
-    // the text heuristics below.
+    // projection is not there (old cold cache, written before this plugin
+    // registered the projection), so the SHAPE decides: an automatic title
+    // echoes the first message, so a "/" head that reads like prose
+    // ("角色：资深前端/插件 UI 评审", "你是文档/账本核对员。任务 id") must not
+    // grow a folder (v0.42.1, issue #25). Only a slug-shaped head — the way a
+    // user names a group — is trusted.
     const TITLE_SOURCE_KEY = 'betterWorkspace/titleSource'
     const titleSourceOf = (summary) => {
       const values = summary && summary.projectionValues
       return values && typeof values === 'object' ? values[TITLE_SOURCE_KEY] : undefined
     }
-    const groupsAllowedFor = (summary) => {
+    const GROUP_HEAD_RE = /^[A-Za-z0-9][A-Za-z0-9._@+#-]{0,31}$/
+    const deliberateGroupPrefix = (title) => {
+      const text = String(title || '')
+      const at = text.indexOf('/')
+      if (at <= 0) return false
+      const head = text.slice(0, at).trim().replace(/^["“']+|["”']+$/g, '')
+      return GROUP_HEAD_RE.test(head)
+    }
+    // title is the DISPLAYED title (the grafted one when the cache carried it);
+    // a graft only exists for a remembered user prefix, so "display differs
+    // from the wire title" is itself the evidence that grouping was authored.
+    const groupsAllowedFor = (summary, title) => {
       const source = titleSourceOf(summary)
-      return source === undefined || source === 'user'
+      if (source === 'user') return true
+      const wire = summary && typeof summary.title === 'string' ? summary.title : ''
+      const shown = typeof title === 'string' ? title : wire
+      if (source === undefined) return deliberateGroupPrefix(shown)
+      // fallback / provider / explicit null: the wire title is prose.
+      return wire !== '' && shown !== wire && deliberateGroupPrefix(shown)
     }
     /**
      * Plain-text splitting with the URL tail kept opaque: a bare "/" split
@@ -1104,6 +1124,81 @@ window.__ModuleLoader__.load({
       return workspaceSlashOf(legacySlash) ? 'disk-slash' : 'disk'
     }
 
+    /**
+     * v0.42.1: the workspace created by an add flow that has not been revealed
+     * yet. The sidebar's adoptDirectory and the hero picker's adoptPath live in
+     * different component instances, so the intent travels through one
+     * module-level slot; at most one creation is in flight. `at` bounds the
+     * wait — a Host that never lists the workspace must not keep the slot (and
+     * a later unrelated render) armed forever.
+     */
+    let pendingWorkspaceReveal = null
+
+    /**
+     * Expansion steps that make `workspaceId` visible, outermost first: name
+     * folders carry their idPath, disk-nested parents carry their workspace id.
+     * `null` means the current tree does not contain the workspace yet (the
+     * Host snapshot has not landed); an empty array means it is already at a
+     * visible root level. Pure and sliceable so the smoke suite can walk real
+     * tree shapes.
+     */
+    const revealChainOf = (level, workspaceId) => {
+      if (!level || workspaceId === undefined || workspaceId === null) return null
+      const seqOf = (lv) => (lv && Array.isArray(lv.seq))
+        ? lv.seq
+        : [
+          ...(((lv && lv.folders) || []).map((node) => ({ kind: 'folder', node }))),
+          ...(((lv && lv.workspaces) || []).map((entry) => ({ kind: 'ws', entry }))),
+        ]
+      const walk = (lv) => {
+        for (const item of seqOf(lv)) {
+          if (item.kind === 'ws') {
+            const entry = item.entry
+            if (!entry) continue
+            if (entry.workspaceId === workspaceId) return []
+            const below = walk(entry.sub)
+            if (below !== null) return [{ kind: 'ws', id: entry.workspaceId }].concat(below)
+            continue
+          }
+          const node = item.node
+          if (!node) continue
+          if (node.kind === 'ws' && node.workspace) {
+            const workspace = node.workspace
+            if (workspace.workspaceId === workspaceId) return []
+            const below = walk(workspace.sub)
+            if (below !== null) return [{ kind: 'ws', id: workspace.workspaceId }].concat(below)
+            continue
+          }
+          const idPath = node.idPath || node.path
+          const below = walk(node)
+          if (below !== null) return [{ kind: 'folder', idPath }].concat(below)
+        }
+        return null
+      }
+      return walk(level)
+    }
+
+    /**
+     * Every workspace id a tree node owns, including disk-nested children and
+     * compressed ws-kind folders. A collapse must drop the quota lift flags of
+     * everything that just went out of sight: the official group collapse
+     * discards its watermark, and the plugin's lift is the same kind of
+     * per-workspace volume state (v0.42.1).
+     */
+    const collectWorkspaceIds = (level, out = []) => {
+      const ids = out
+      if (!level) return ids
+      for (const folder of level.folders || []) {
+        if (folder.kind === 'ws' && folder.workspace) ids.push(folder.workspace.workspaceId)
+        else collectWorkspaceIds(folder, ids)
+      }
+      for (const entry of level.workspaces || []) {
+        ids.push(entry.workspaceId)
+        collectWorkspaceIds(entry.sub, ids)
+      }
+      return ids
+    }
+
     // Issue #8 progressive listing. The official collapsedSessionRows mirror
     // this quota used to track is GONE in dsh 0.2.1-alpha.5 — the shipped
     // browser now folds per group behind a client-side watermark (base 5,
@@ -1117,21 +1212,53 @@ window.__ModuleLoader__.load({
     // rows the shipped watermark refuses to fold away. Idle rows beyond the
     // quota hide behind one overflow row; a lifted workspace renders
     // everything again.
+    // v0.42.1: this is a WINDOW over the list, not a re-partition of it. The
+    // shipped browser (watermarkRows / requiredWatermark) keeps list order and
+    // raises the watermark to cover an attention row; it never pulls that row
+    // out of place and never shows an extra row on top of the base count.
+    // Returning [...keep, ...idle] instead made every Session you opened jump to
+    // the top of its node and pushed one more row into view (reported: "打开会话
+    // 会自动置顶，展开的会话数也会变").
     const SESSION_ATTENTION_WINDOW = 50
     const limitSessionsForRender = (rows, limit, lifted, currentId) => {
       if (!rows || !limit || lifted) return { rows: rows || [], hidden: 0 }
-      const keep = []
-      const idle = []
-      let seen = 0
+      let index = 0
+      let required = 0
       for (const row of rows) {
-        if (!row.blank) seen += 1
-        const attention = row.blank || row.running || row.subagents > 0 || row.pinned
-          || (seen <= SESSION_ATTENTION_WINDOW && (row.pending || row.completed || row.id === currentId))
-        if (attention) keep.push(row)
-        else idle.push(row)
+        if (row.blank) continue
+        index += 1
+        const attention = (index <= SESSION_ATTENTION_WINDOW && (row.running || row.subagents > 0 || row.pending || row.completed || row.id === currentId)) || row.pinned
+        if (attention) required = index
       }
-      if (idle.length <= limit) return { rows, hidden: 0 }
-      return { rows: [...keep, ...idle.slice(0, limit)], hidden: idle.length - limit }
+      const watermark = required > limit ? required : limit
+      let count = 0
+      const visible = rows.filter((row) => {
+        if (row.blank) return true
+        count += 1
+        return count <= watermark
+      })
+      if (visible.length === rows.length) return { rows, hidden: 0 }
+      return { rows: visible, hidden: rows.length - visible.length }
+    }
+
+    /**
+     * Official watermark arithmetic (ui-workspace SessionTree). The base count
+     * is the store's quota; one click raises the watermark by one base step,
+     * and when what remains fits inside a single step it jumps to Infinity —
+     * "show everything" is the LAST step, never a new baseline. A collapse
+     * drops the mark, so a reopened group starts folded again.
+     */
+    const sessionWatermarkOf = (mark, base) => {
+      if (!(base > 0)) return Infinity
+      if (mark === Infinity) return Infinity
+      const value = Number(mark)
+      return Number.isFinite(value) && value > base ? value : base
+    }
+    const nextSessionWatermark = (mark, hidden, base) => {
+      if (!(base > 0)) return Infinity
+      if (hidden <= base) return Infinity
+      const current = sessionWatermarkOf(mark, base)
+      return current === Infinity ? Infinity : current + base
     }
 
     /**
@@ -1151,7 +1278,7 @@ window.__ModuleLoader__.load({
       // LITERAL, not a spread of DEFAULT_APPEARANCE: init() is eval-harness
       // friendly (no cross-section reference), and the smoke suite asserts the
       // two stay in lockstep field by field.
-      init: () => ({ expanded: {}, sessionsExpanded: {}, sessionGroups: {}, sessionOrder: {}, prefs: { compactChains: true, sessionLimit: 0, sessionAgeDays: 0, appearance: { color: '', glow: 0, weight: 0, shadow: false, stroke: false, strokeWidth: 1, strokeColor: '#808080' } }, styling: {}, groupBy: 'workspace-tree', orderBy: 'manual', archivedFilter: 'default', workspaceArchivedFilters: {}, workspaceGroupMode: 'disk', sessionTitleSlash: true, workspaceTitleSlash: false, ungroupedOpen: true, folders: { ws: {}, sess: {} }, folderOrder: {} }),
+      init: () => ({ expanded: {}, sessionsExpanded: {}, sessionGroups: {}, sessionOrder: {}, sessionFlat: {}, prefs: { compactChains: true, sessionLimit: 0, sessionAgeDays: 0, appearance: { color: '', glow: 0, weight: 0, shadow: false, stroke: false, strokeWidth: 1, strokeColor: '#808080' } }, styling: {}, groupBy: 'workspace-tree', orderBy: 'manual', archivedFilter: 'default', workspaceArchivedFilters: {}, workspaceGroupMode: 'disk', sessionTitleSlash: true, workspaceTitleSlash: false, ungroupedOpen: true, folders: { ws: {}, sess: {} }, folderOrder: {} }),
       // NOTE: hydration REPLACES the state with the persisted whole value —
       // init defaults never merge. Every action must tolerate a missing key
       // (states persisted by older plugin versions lack sessionGroups), and
@@ -1161,6 +1288,13 @@ window.__ModuleLoader__.load({
         setExpanded: (d, key, value) => { if (!d.expanded) d.expanded = {}; d.expanded[key] = value },
         setSessionsExpanded: (d, key, value) => { if (!d.sessionsExpanded) d.sessionsExpanded = {}; d.sessionsExpanded[key] = value },
         setSessionGroupExpanded: (d, key, value) => { if (!d.sessionGroups) d.sessionGroups = {}; d.sessionGroups[key] = value },
+        // Per-session opt-OUT of "/" grouping (v0.42.1). Historical accident: the
+        // pre-0.39 plugin wrote group prefixes through renameSession, so the
+        // host now records those titles with source=user and no provenance
+        // signal can tell them from a deliberate group. The user wants that
+        // one row flat: the flag keeps the title untouched and only stops the
+        // tree from splitting it, so the decision stays reversible.
+        setSessionFlat: (d, id, on) => { if (!d.sessionFlat) d.sessionFlat = {}; if (on) d.sessionFlat[id] = true; else delete d.sessionFlat[id] },
         setPref: (d, key, value) => { if (!d.prefs) d.prefs = {}; d.prefs[key] = value },
         setStyling: (d, key, value) => { if (!d.styling) d.styling = {}; if (value === null) delete d.styling[key]; else d.styling[key] = value },
         // Browser-local session order (v0.10.2): the fallback channel when the
@@ -1325,10 +1459,19 @@ window.__ModuleLoader__.load({
         if (typeof title !== 'string' || title === '') continue
         const prev = byId[id]
         if (prev && prev.title === title) continue
+        const source = titleSourceOf(summary)
         const base = prev ? (prev.display || prev.title) : undefined
         const grafted = graftTitleDisplay(base, title)
         const entry = { title: title, at: now }
-        if (grafted !== undefined) entry.display = grafted
+        if (title.includes('/')) {
+          // A grouped title: remember whether the GROUP OWNER is the user.
+          // Only then may a later automatic leaf rename keep the prefix.
+          entry.keepPrefix = source === 'user'
+            || (source === undefined && deliberateGroupPrefix(title))
+        } else if (grafted !== undefined && prev && prev.keepPrefix === true) {
+          entry.keepPrefix = true
+          entry.display = grafted
+        }
         byId[id] = entry
         changed = true
       }
@@ -2172,13 +2315,13 @@ window.__ModuleLoader__.load({
         ? E(PulseGlow, { state: pulse }, iconEl || (typeof ui.StateDot === 'function' ? E(ui.StateDot, { state: pulse, size: 10 }) : null))
         : iconEl
       return E('div', {
-        // v0.36.4: an edge band opens the EMPTY reorder slot immediately —
-        // the row grows by one row height on the dropped side, so the
-        // insertion point is a real gap the block slides into (the user
-        // report: a thin line is not "撑开让位").
+        // v0.42.1: the reorder marker is the official 12px insert line —
+        // the SAME class pair the session rows carry, so both kinds of drag
+        // look identical. The drawer slot that grew the row is retired:
+        // official stability comes from never resizing the measured row.
         className: cls('bw-row', 'bw-container-row',
-          dropSlot === 'before' && 'bw-slot-above',
-          dropSlot === 'after' && 'bw-slot-below',
+          dropSlot === 'before' && 'bw-drop-before',
+          dropSlot === 'after' && 'bw-drop-after',
           dropInto && 'bw-drop-into', dropInto && 'bw-drop-into-strong'),
         'data-row-key': dataRowKey,
         style: { '--bw-indent': (depth * 12) + 'px', ...(custStyle || {}), ...(pulse ? { '--bw-pulse-color': PULSE_COLORS[pulse] || PULSE_COLORS.ongoing } : null) },
@@ -2192,7 +2335,7 @@ window.__ModuleLoader__.load({
         // Official projectRow duality (Rows.module.css): the chevron hides
         // until hover, swapping in for the folder glyph; the arrow spins
         // open with the row.
-        E('span', { className: cls('bw-chevron', expanded && 'bw-chevron-open') }, E('span', { className: 'bw-arrow' }, icon('IconTriangleRightFill14', 14))),
+        E('span', { className: cls('bw-chevron', expanded && 'bw-chevron-open') }, E('span', { className: 'bw-arrow' }, icon('IconTriangleRightFill14', 16))),
         E('span', { className: cls('bw-row-icon', 'bw-folder-cell', active && !pulse && 'bw-folder-active') }, iconChild),
         // A row that already carries a custom label glow breathes in sync.
         E('span', { className: cls('bw-row-label', pulse && custStyle && custStyle.textShadow && 'bw-pulse-text') }, node.name),
@@ -2206,11 +2349,9 @@ window.__ModuleLoader__.load({
         ? E(PulseGlow, { state: pulse }, iconEl || (typeof ui.StateDot === 'function' ? E(ui.StateDot, { state: pulse, size: 10 }) : null))
         : iconEl
       let row = E('div', {
-        // v0.36.4: workspace rows open the same empty reorder slot a group
-        // row does (the official 12px insert line alone read as "没撑开").
-        // The half split is judged in LOGICAL height, so the grown row
-        // cannot flip its own band under the pointer.
-        className: cls('bw-row', 'bw-container-row', currentInside && 'bw-row-current', menuOpen && 'menu-open', dropHalf === 'before' && 'bw-slot-above', dropHalf === 'after' && 'bw-slot-below', dropInto && 'bw-drop-into', dropInto && 'bw-drop-into-strong'),
+        // v0.42.1: same official 12px insert line as the group and session
+        // rows — one marker for every reorder target. Nothing grows.
+        className: cls('bw-row', 'bw-container-row', currentInside && 'bw-row-current', menuOpen && 'menu-open', dropHalf === 'before' && 'bw-drop-before', dropHalf === 'after' && 'bw-drop-after', dropInto && 'bw-drop-into', dropInto && 'bw-drop-into-strong'),
         'data-row-key': dataRowKey,
         style: { '--bw-indent': (depth * 12) + 'px', ...(custStyle || {}), ...(pulse ? { '--bw-pulse-color': PULSE_COLORS[pulse] || PULSE_COLORS.ongoing } : null) },
         onClick: onToggle,
@@ -2224,7 +2365,7 @@ window.__ModuleLoader__.load({
         // until hover, swapping in for the folder glyph; the arrow spins
         // open with the row; a subtree holding the current session tints
         // the folder glyph blue (folderActive), not the whole row.
-        E('span', { className: cls('bw-chevron', sessionsOpen && 'bw-chevron-open') }, E('span', { className: 'bw-arrow' }, icon('IconTriangleRightFill14', 14))),
+        E('span', { className: cls('bw-chevron', sessionsOpen && 'bw-chevron-open') }, E('span', { className: 'bw-arrow' }, icon('IconTriangleRightFill14', 16))),
         E('span', { className: cls('bw-row-icon', 'bw-folder-cell', currentInside && !pulse && 'bw-folder-active') }, iconChild),
         E('span', { className: cls('bw-row-label', pulse && custStyle && custStyle.textShadow && 'bw-pulse-text'), title: workspace.title || workspace.leaf }, workspace.leaf),
         count > 0 ? E('span', { className: 'bw-row-count' }, String(count)) : null,
@@ -2526,7 +2667,7 @@ window.__ModuleLoader__.load({
       },
         // Session groups are a plugin concept: their chevron stays visible
         // (only the official container rows hide it until hover).
-        E('span', { className: cls('bw-chevron', expanded && 'bw-chevron-open') }, E('span', { className: 'bw-arrow' }, icon('IconTriangleRightFill14', 14))),
+        E('span', { className: cls('bw-chevron', expanded && 'bw-chevron-open') }, E('span', { className: 'bw-arrow' }, icon('IconTriangleRightFill14', 16))),
         // Session groups have no icon slot: a collapsed group with hidden
         // status relays through a breathing official StateDot instead.
         pulse ? E(PulseGlow, { state: pulse }, typeof ui.StateDot === 'function' ? E(ui.StateDot, { state: pulse, size: 10 }) : null) : null,
@@ -3666,7 +3807,10 @@ window.__ModuleLoader__.load({
           .then(() => createWorkspace({ path: String(path) }))
           .then((workspace) => {
             setFlowOpen(false)
-            if (workspace && workspace.workspaceId !== undefined && typeof onPick === 'function') onPick(workspace.workspaceId)
+            if (workspace && workspace.workspaceId !== undefined) {
+              pendingWorkspaceReveal = { id: workspace.workspaceId, at: Date.now() }
+              if (typeof onPick === 'function') onPick(workspace.workspaceId)
+            }
           })
           .catch((reason) => {
             // The picker's own error surface: the shared picker flow answers a
@@ -3798,6 +3942,7 @@ window.__ModuleLoader__.load({
       const sessionsExpandedMap = useStore ? (useStore(s => s.sessionsExpanded) || {}) : {}
       const sessionGroupsMap = useStore ? (useStore(s => s.sessionGroups) || {}) : {}
       const prefsMap = useStore ? (useStore(s => s.prefs) || {}) : {}
+      const flatMap = useStore ? (useStore(s => s.sessionFlat) || {}) : {}
       const stylingMap = useStore ? (useStore(s => s.styling) || {}) : {}
       const sessionOrderMap = useStore ? (useStore(s => s.sessionOrder) || {}) : {}
       // Declared (possibly empty) groups, v0.17.0. Hydration replaces the whole
@@ -4061,16 +4206,20 @@ window.__ModuleLoader__.load({
         : {}
       const rememberedTitleOf = (id) => (remembered[id] ? remembered[id].title : undefined)
 
-      // v0.30.2 conversation-following titles: the wire carries no source
-      // marker (user vs provider rename), so grafting is shape-based —
-      // remembered display (prefix + previous leaves) wins only while the
-      // wire title stays group-less. A wire title with "/" and manual
-      // renames (renameByUser forgets the display) always stand verbatim.
-      const rememberedDisplayOf = (id) => (remembered[id] && typeof remembered[id].display === 'string' ? remembered[id].display : undefined)
+      // v0.30.2 conversation-following titles: when an automatic rename
+      // replaces only the leaf, the remembered display (user group prefix +
+      // fresh leaf) keeps the row where the user put it. v0.42.1 gates that on
+      // provenance: only a prefix LEARNED FROM A USER-AUTHORED title may be
+      // grafted (entry.keepPrefix), and a user rename on the wire always wins
+      // verbatim — the old shape-only rule kept re-attaching a prefix the host
+      // had already replaced, which both masked the new title and resurrected
+      // a group the user never made (issue #25).
+      const rememberedDisplayOf = (id) => (remembered[id] && remembered[id].keepPrefix === true
+        && typeof remembered[id].display === 'string' ? remembered[id].display : undefined)
       const rowTitleOf = (id, summary, graftedOn) => {
         if (graftedOn) {
           const wire = summary && summary.title
-          if (typeof wire === 'string' && wire !== '' && !wire.includes('/')) {
+          if (typeof wire === 'string' && wire !== '' && !wire.includes('/') && titleSourceOf(summary) !== 'user') {
             const shown = rememberedDisplayOf(id)
             if (shown) return shown
           }
@@ -4172,7 +4321,10 @@ window.__ModuleLoader__.load({
       // Issue #8: workspaces whose overflow row was clicked this mount.
       // Component-local on purpose (official sessionLimits precedent): a
       // lifted fold resets when the sidebar unmounts.
-      const [limitLifted, setLimitLifted] = React.useState({})
+      // Session quota watermarks, keyed by workspace + session-tree path: each
+      // workspace root and each session group folds on its own quota (official
+      // SessionTree model), never on the workspace's whole flat list.
+      const [sessionWatermarks, setSessionWatermarks] = React.useState({})
       const [ctx, setCtx] = React.useState(null) // context menu { kind, payload, x, y }
       const [copyNotice, setCopyNotice] = React.useState(null) // { seq, ok } copy-session-id notice
       const [customize, setCustomize] = React.useState(null) // { kind, entryKey, name }
@@ -4319,7 +4471,13 @@ window.__ModuleLoader__.load({
         if (glow > 0 && color) shadows.push('0 0 ' + glow + 'px ' + color)
         if (shadow) shadows.push('1px 1px 2px rgba(0,0,0,.85)')
         const style = {}
-        if (color) style.color = color
+        // Auto-assigned colours are an ACCENT on the row glyph, not a repaint
+        // of the label: the official list keeps every title on
+        // --dsw-alias-label-primary and let colour live in the 16px icon cell.
+        // A manual hex pick still tints the whole row (an explicit choice).
+        const autoColor = isAutoColorToken(appearance.color) && String(key).startsWith('workspace:')
+        if (color && !autoColor) style.color = color
+        if (color && autoColor) style['--bw-auto-color'] = color
         if (weight > 0) style.fontWeight = weight
         if (shadows.length > 0) style.textShadow = shadows.join(',')
         const stroke = strokeStyleOf(appearance)
@@ -4358,7 +4516,7 @@ window.__ModuleLoader__.load({
             pending: visiblePendingKind(st && st.pendingInteraction && st.pendingInteraction.kind),
             pinned: pinnedSet.has(id) && !archivedSet.has(id),
             archived: archivedSet.has(id),
-            allowGroups: groupsAllowedFor(summary),
+            allowGroups: !flatMap[id] && groupsAllowedFor(summary, rowTitleOf(id, summary, prefsMap.graftTitlePrefix !== false)),
           })
         }
         ungrouped.sort((a, b) => b.updatedAt - a.updatedAt)
@@ -4436,7 +4594,7 @@ window.__ModuleLoader__.load({
             pending: visiblePendingKind(st && st.pendingInteraction && st.pendingInteraction.kind),
             pinned: pinnedSet.has(id) && !archivedSet.has(id),
             archived: archivedSet.has(id),
-            allowGroups: groupsAllowedFor(summary),
+            allowGroups: !flatMap[id] && groupsAllowedFor(summary, rowTitleOf(id, summary, prefsMap.graftTitlePrefix !== false)),
           })
         }
         // Browser-local reorder fallback: used only when the injected
@@ -4979,28 +5137,17 @@ window.__ModuleLoader__.load({
         }
       }, [drag === null])
 
-      // Geometry helpers shared by both reorder targets. v0.36.4 judges in
-      // v0.36.4 geometry: an open reorder slot (bw-slot-above / -below) pads
-      // the row open by one logical row (padding, so the box grows to two
-      // rows). Judge the pointer against the row's ORIGINAL position, not the
-      // padded box: the original position is the half its content did NOT
-      // slide into — the pad above for a before-slot, the remaining content
-      // box for an after-slot. Judging there keeps a still pointer from
-      // flipping the slot the moment it opens (the reported "抽搐"), while
-      // still letting the pointer cross the original midpoint to switch
-      // direction — the padded half answers null instead of a stale band.
-      const originalBoxOf = (el) => {
-        const rect = el.getBoundingClientRect()
-        const style = getComputedStyle(el)
-        const padTop = parseFloat(style.paddingTop) || 0
-        const padBottom = parseFloat(style.paddingBottom) || 0
-        if (padTop > 0) return { top: rect.top, bottom: rect.top + padTop }
-        if (padBottom > 0) return { top: rect.top, bottom: rect.bottom - padBottom }
-        return { top: rect.top, bottom: rect.bottom }
-      }
-      // null = the pointer sits in the half the open slot vacated: the caller
-      // keeps its current drop target instead of re-deciding on geometry that
-      // only exists because of that slot.
+      // Geometry helpers shared by both reorder targets, ported from the
+      // official UI (dsh-client-ui-workspace: SessionNodeItem's `rowHalf`,
+      // the workspace section's `workspaceGroupHalf`). Both read the plain
+      // row rect: the official insert marker is a 12px overlay drawn OVER the
+      // row boundary, so nothing this drag does resizes the row it is
+      // measured against. That is what makes it stable — the retired v0.36.x
+      // drawer slot grew the row, so a still pointer fell into the padding the
+      // drag itself had created and the verdict flipped ("抽搐"); this port
+      // never resizes what it measures.
+      // null = the pointer is outside this row (the neighbour's handler owns
+      // that frame); callers leave their current target alone.
       // v0.36.5 MIXED LEVEL SEQUENCE. buildTree attaches a `seq` to every
       // level (group rows and BARE workspace rows interleaved by the
       // persisted folderOrder, whose tokens may be a group name or
@@ -5016,40 +5163,27 @@ window.__ModuleLoader__.load({
         ]
       const levelTokenOf = (item) => item.kind === 'ws' ? 'w:' + item.entry.workspaceId : item.node.name
       const rowHalf = (event) => {
-        const box = originalBoxOf(event.currentTarget)
+        const box = event.currentTarget.getBoundingClientRect()
         const y = event.clientY
         if (y < box.top || y > box.bottom) return null
-        return y < (box.top + box.bottom) / 2 ? 'before' : 'after'
+        return y < box.top + box.height / 2 ? 'before' : 'after'
       }
-      // Three-band targeting for group rows (react-arborist style): the
-      // outer 30% of the CONTENT means "reorder against this group", the
-      // middle 40% means "drop into" — so move-into (the framed highlight)
-      // is easy to hit and reorder never swallows the pointer. v0.36.3
-      // widened the bands from a quarter: at 25% they were 8.5px on a 34px
-      // row and practically unhittable (every drop landed "into" instead
-      // of reordering beside).
+      // Three-band targeting for rows that also take a move-into
+      // (react-arborist style): the outer 30% reorders against this row, the
+      // middle 40% drops INTO it, so the framed move-into is easy to hit and
+      // reordering never swallows the pointer. v0.36.3 widened the bands from
+      // a quarter (at 25% they were 8.5px on a 34px row — unhittable). Rows
+      // with no INTO meaning (sessions) use the official two-band rowHalf.
       const rowZone = (event) => {
-        const box = originalBoxOf(event.currentTarget)
+        const box = event.currentTarget.getBoundingClientRect()
         const y = event.clientY
         if (y < box.top || y > box.bottom) return null
-        const h = box.bottom - box.top
+        const h = box.height
         if (h < 2) return 'into'
         const rel = (y - box.top) / h
         if (rel < 0.3) return 'before'
         if (rel > 0.7) return 'after'
         return 'into'
-      }
-      // v0.36.10: TRUE when the pointer sits in the row's ORIGINAL content
-      // box (a possibly-open slot's padding excluded). While this row holds
-      // a reorder slot the padding band keeps the slot verdict, and the
-      // content box re-judges the three bands — that is what keeps the
-      // INTO middle reachable after a slot opened. The old slotOpen lock
-      // answered before/after forever, so a pointer that entered through an
-      // edge band could never reach the middle: "拖到另一个下面(嵌套)" was
-      // unreachable through the natural approach path.
-      const pointerInRowBox = (event) => {
-        const box = originalBoxOf(event.currentTarget)
-        return event.clientY >= box.top && event.clientY <= box.bottom
       }
       const dragMatches = (kind) => drag !== null && drag.kind === kind
       // A refused hover must DROP the highlight it already owns: leaving a
@@ -5079,9 +5213,9 @@ window.__ModuleLoader__.load({
       // AND a folder drop (whole-group move) alike — the INTO band only:
       // an edge-band reorder slot draws the official insert line instead.
       const wsDropInto = (path) => (dragMatches('workspace') || dragMatches('folder')) && drag.over && drag.over.kind === 'folder' && drag.over.target === path && (!drag.over.zone || drag.over.zone === 'into')
-      // v0.36.4: an edge band on a group row answers IMMEDIATELY with the
-      // empty reorder slot (bw-slot-above/below) — the drop position is
-      // visible the moment the pointer enters the band, no intent wait.
+      // An edge band on a group row answers IMMEDIATELY with the official
+      // 12px insert line above/below the block — the drop position is visible
+      // the moment the pointer enters the band, no intent wait.
       // v0.36.5: BOTH sources open the slot on a group row. A folder source
       // reorders the group block; a WORKSPACE source interleaves one bare
       // workspace row beside the group — the gesture "insert as the first
@@ -5438,23 +5572,10 @@ window.__ModuleLoader__.load({
           // refused — no preventDefault, so the platform shows its own
           // 'no drop' cursor, which is the truth.
           //
-          // v0.36.4: once THIS row already holds a reorder slot, the whole
-          // original row position answers before/after ONLY (a plain
-          // midpoint split). Judging the three bands again there reintroduced
-          // the INTO band on the very row that just padded open: a pointer
-          // drifting a few pixels inside it flipped to INTO, closed the slot
-          // and read as a flicker ("抽搐") — and worse, the drop then landed
-          // as move-into (a no-op) instead of the reorder the user aimed at.
-          // The three bands still decide the FIRST entry, so INTO (move the
-          // source inside this group) stays reachable.
-          const slotOpen = drag.over !== null && drag.over.kind === 'folder' && drag.over.target === idPath && (drag.over.zone === 'before' || drag.over.zone === 'after')
-          // v0.36.10: an open slot no longer locks the verdict. The slot's
-          // padding band keeps the slot (rowHalf is null there and the
-          // zone-null branch below holds), but the ORIGINAL content box
-          // re-judges the three bands — the INTO middle stays reachable.
-          const zone = slotOpen
-            ? (pointerInRowBox(event) ? rowZone(event) : rowHalf(event))
-            : rowZone(event)
+          // One geometry, no memory: the row is never padded by this drag,
+          // so the three bands are simply re-read every frame (official
+          // stability comes from not resizing the measured element).
+          const zone = rowZone(event)
           const isFolder = dragMatches('folder')
           const isWorkspace = dragMatches('workspace')
           if (isFolder) {
@@ -5473,16 +5594,7 @@ window.__ModuleLoader__.load({
               const directParent = cutAt === -1 ? '' : drag.source.path.slice(0, cutAt)
               if (targetPath !== directParent || zone !== 'into') { clearOver('folder', idPath); return }
             }
-            // Pointer in the half the open slot vacated: keep this row's slot
-            // (re-deciding there would flicker the slot it just opened).
-            if (zone === null) {
-              if (drag.over && drag.over.kind === 'folder' && drag.over.target === idPath && (drag.over.zone === 'before' || drag.over.zone === 'after')) {
-                event.preventDefault()
-                event.stopPropagation()
-                try { event.dataTransfer.dropEffect = 'move' } catch { }
-              }
-              return
-            }
+            if (zone === null) return
             // Edge bands permute ONE level's sibling list; a cross-parent
             // band is refused. Move-into (the middle band) stays open across
             // parents: it is a batch rename, which does reach another group.
@@ -5508,14 +5620,7 @@ window.__ModuleLoader__.load({
             // filesystem fact), so the target level must live in the same
             // disk scope as the source. The middle band keeps its old
             // meaning: move the workspace INTO this group.
-            if (zone === null) {
-              if (drag.over && drag.over.kind === 'folder' && drag.over.target === idPath && (drag.over.zone === 'before' || drag.over.zone === 'after')) {
-                event.preventDefault()
-                event.stopPropagation()
-                try { event.dataTransfer.dropEffect = 'move' } catch { }
-              }
-              return
-            }
+            if (zone === null) return
             if (zone !== 'into' && (drag.source.levelKey || '') !== parentKeyOf(idPath) && (ownerPrefixOf(idPath) || '') !== (drag.source.disk || '')) { clearOver('folder', idPath); return }
           }
           event.preventDefault()
@@ -5596,16 +5701,25 @@ window.__ModuleLoader__.load({
         setDrag(null)
         moveFolderToLevelEnd(source)
       }
-      const writeLevelOrder = (containerKey, sourceToken, targetToken, zone) => {
+      // Token math only — no store write. The workspace drop needs the new order
+      // BEFORE the Host round trip (see commitWorkspaceDrop), and the rollback
+      // path reuses the previous list, so the pure part is factored out here and
+      // writeLevelOrder stays the plain "compute then persist" wrapper.
+      const nextLevelTokens = (containerKey, sourceToken, targetToken, zone) => {
         const container = folderContainerOf(containerKey)
-        if (!container) { console.warn('[bw] level reorder refused: container not found', containerKey); return false }
+        if (!container) { console.warn('[bw] level reorder refused: container not found', containerKey); return null }
         const tokens = levelSeqOf(container).map(levelTokenOf)
         const at = tokens.indexOf(sourceToken)
-        if (at === -1) { console.warn('[bw] level reorder refused: source not in this level', sourceToken); return false }
+        if (at === -1) { console.warn('[bw] level reorder refused: source not in this level', sourceToken); return null }
         tokens.splice(at, 1)
         const targetAt = tokens.indexOf(targetToken)
-        if (targetAt === -1) { console.warn('[bw] level reorder refused: target not in this level', targetToken); return false }
+        if (targetAt === -1) { console.warn('[bw] level reorder refused: target not in this level', targetToken); return null }
         tokens.splice(zone === 'after' ? targetAt + 1 : targetAt, 0, sourceToken)
+        return tokens
+      }
+      const writeLevelOrder = (containerKey, sourceToken, targetToken, zone) => {
+        const tokens = nextLevelTokens(containerKey, sourceToken, targetToken, zone)
+        if (!tokens) return false
         if (typeof actions.setFolderOrder === 'function') actions.setFolderOrder(containerKey, tokens)
         return true
       }
@@ -5683,20 +5797,45 @@ window.__ModuleLoader__.load({
           : (half === 'after'
             ? nextWorkspaceAfter(targetWorkspace.folderPath || '', targetWorkspace.workspaceId)
             : targetWorkspace.workspaceId)
+        const levelKey = targetWorkspace.levelKey || ''
+        // v0.42.1 PERF — "sorting workspaces lags much more than sorting
+        // sessions". Once a level carries a stored token list the tree renders
+        // from that list, so the Host client model's own optimistic insert (it
+        // installs the new registry order before its RPC resolves) cannot move
+        // the row; the tokens were only written in .then(), which put a whole
+        // registry write in front of the rows swapping. The Host's insertBefore
+        // rewrites the ENTIRE global registry state (enqueueOperation +
+        // recoverPendingMutation), a session drop writes one record — that is the
+        // asymmetry the user felt. Install the level order here (mouseup-visible),
+        // keep the previous list as the rollback point, and skip the late write
+        // when it already ran.
+        const storedLevelOrder = Array.isArray(folderOrderMap[levelKey]) ? folderOrderMap[levelKey] : null
+        const optimisticOrder = sameFolder && sameDisk && storedLevelOrder && storedLevelOrder.length > 0
+          ? nextLevelTokens(levelKey, 'w:' + source.workspaceId, 'w:' + targetWorkspace.workspaceId, half === 'after' ? 'after' : 'before')
+          : null
+        if (optimisticOrder && typeof actions.setFolderOrder === 'function') actions.setFolderOrder(levelKey, optimisticOrder)
         chain
           .then(() => (anchor !== undefined ? insertWorkspaceBefore(source.workspaceId, anchor) : insertWorkspaceBefore(source.workspaceId)))
           // v0.36.5: once a level carries a MIXED list (it interleaves a bare
           // workspace with its groups), the registry edit above no longer
           // moves the row — rewrite the list too, keeping every other token.
+          // v0.42.1: only when the drop could not install it up front (a
+          // registry-ordered level needs no write at all, and a re-group drop
+          // moves the level, so its tokens are only known once the rename lands).
           .then(() => {
-            const levelKey = targetWorkspace.levelKey || ''
             const container = folderContainerOf(levelKey)
             const tokens = container ? levelSeqOf(container).map(levelTokenOf) : []
-            if (tokens.some((token) => token.startsWith('w:'))) {
+            if (!optimisticOrder && tokens.some((token) => token.startsWith('w:'))) {
               writeLevelOrder(levelKey, 'w:' + source.workspaceId, 'w:' + targetWorkspace.workspaceId, half === 'after' ? 'after' : 'before')
             }
           })
-          .catch(fail)
+          .catch((error) => {
+            // The registry edit failed: put the user's previous order back so a
+            // refused Host write cannot leave the tree in a state the Host never
+            // accepted.
+            if (optimisticOrder && typeof actions.setFolderOrder === 'function') actions.setFolderOrder(levelKey, storedLevelOrder)
+            fail(error)
+          })
       }
       // v0.36.6 LIFT. Dropping a bare workspace row on a group's EDGE band
       // from a DIFFERENT level means: take the row out of its group, give it
@@ -6200,29 +6339,54 @@ window.__ModuleLoader__.load({
 
       /* ---------------------------- rows ----------------------------- */
 
+      // The quota bucket is the workspace plus the SESSION-TREE path it belongs
+      // to, so a workspace root and each of its session groups fold on their
+      // own count. The old implementation folded the workspace's whole flat
+      // list before building the tree, so one fat subgroup ate the root's
+      // five rows and the root showed a single session (user report).
+      const bucketOf = (workspaceId, path) => workspaceId + '|' + (path || '')
+      // A collapse discards every watermark it hides (official group collapse
+      // drops its mark and reopens at the base). Returning the same object when
+      // nothing changed keeps the store from broadcasting a no-op.
+      const clearSessionWatermarks = (ids) => {
+        if (!ids || ids.length === 0) return
+        setSessionWatermarks((current) => {
+          if (!current) return current
+          let changed = false
+          const next = {}
+          for (const key of Object.keys(current)) {
+            if (ids.some((id) => key === id + '|' || key.startsWith(id + '|'))) changed = true
+            else next[key] = current[key]
+          }
+          return changed ? next : current
+        })
+      }
+      const clearNodeWatermarks = (workspaceId, path) => {
+        const root = bucketOf(workspaceId, path)
+        setSessionWatermarks((current) => {
+          if (!current) return current
+          let changed = false
+          const next = {}
+          for (const key of Object.keys(current)) {
+            if (key === root || key.startsWith(root + '/')) changed = true
+            else next[key] = current[key]
+          }
+          return changed ? next : current
+        })
+      }
+
       const renderSessionTree = (workspace, depth) => {
         // Folder semantics: a closed workspace shows no sessions at all (the
         // row keeps its count badge); an open one shows the full session tree.
         if (!searching && !sessionsOpenOf(workspace.workspaceId)) return []
         const full = visibleSessionsOf(workspace)
         if (full.length === 0 && !hasDeclared(sessFolders, workspace.workspaceId)) return []
-        // Issue #8 progressive listing: quota the IDLE rows of this folder
-        // (attention rows stay visible — see limitSessionsForRender); one
-        // overflow row hides the rest until clicked. Search always shows
-        // everything, and the current session is passed so it can never be
-        // folded away.
-        const limited = limitSessionsForRender(full, sessionLimit, limitLifted[workspace.workspaceId], currentId)
-        const out = renderSessionNode(buildSessionTree(limited.rows, sessionSlash, sessFolders, workspace.workspaceId), workspace.workspaceId, depth)
-        if (limited.hidden > 0) {
-          out.push(E('button', {
-            key: 'lim-' + workspace.workspaceId,
-            type: 'button',
-            className: 'bw-row bw-overflow-row',
-            style: { paddingLeft: 8 + (depth + 1) * 12 },
-            onClick: () => setLimitLifted((current) => ({ ...current, [workspace.workspaceId]: true })),
-          }, t('sessions.expand', { n: limited.hidden })))
-        }
-        return out
+        // The tree sits at the WORKSPACE's own depth: the official sessionRow
+        // carries no extra indent over projectRow (Rows.module.css uses one
+        // --dsh-workspace-indent for both). Only nested session groups step
+        // in; the old depth+1 made every direct session look like a child of
+        // its own workspace row.
+        return renderSessionNode(buildSessionTree(full, sessionSlash, sessFolders, workspace.workspaceId), workspace.workspaceId, depth)
       }
       const searchSessionNode = (node) => {
         const groups = []
@@ -6248,7 +6412,13 @@ window.__ModuleLoader__.load({
             expanded: open,
             pulse: (statusPulse && !open) ? nodePulseOf(group) : null,
             count: countSessionTree(group),
-            onToggle: () => { if (!searching) actions.setSessionGroupExpanded(key, !open) },
+            onToggle: () => {
+              if (searching) return
+              // Closing a subgroup hides its own bucket and every nested one;
+              // reopening therefore starts at the quota again.
+              if (open) clearNodeWatermarks(workspaceId, group.path)
+              actions.setSessionGroupExpanded(key, !open)
+            },
             onContextMenu: (e) => openCtx('sgroup', { workspaceId, path: group.path, name: group.name, empty: countSessionTree(group) === 0 }, e),
             dropInto: sgroupDropInto(workspaceId, group.path),
             dragEvents: sgroupDropEvents(workspaceId, group.path),
@@ -6257,7 +6427,63 @@ window.__ModuleLoader__.load({
           }))
           if (open) out.push(...renderSessionNode(group, workspaceId, depth + 1))
         }
-        for (const s of view.sessions) out.push(renderSessionRow(s, depth, workspaceId))
+        out.push(...renderSessionRows(view.sessions || [], workspaceId, view.path, depth))
+        return out
+      }
+
+      /**
+       * One node's own quota. Attention rows never count (blank/running/
+       * subagent/pinned, plus pending/completed/current inside the official
+       * window); the idle tail folds behind ONE overflow row whose click raises
+       * THIS node's watermark by one quota step until everything fits. Once
+       * nothing is hidden the row becomes "collapse" and returns the node to
+       * the base count.
+       */
+      const renderSessionRows = (sessions, workspaceId, path, depth) => {
+        if (sessions.length === 0) return []
+        const bucket = bucketOf(workspaceId, path)
+        const quota = searching
+          ? Infinity
+          : sessionWatermarkOf(sessionWatermarks[bucket], sessionLimit)
+        const limited = quota === Infinity
+          ? { rows: sessions, hidden: 0 }
+          : limitSessionsForRender(sessions, quota, false, currentId)
+        const out = limited.rows.map((session) => renderSessionRow(session, depth, workspaceId))
+        if (searching || !(sessionLimit > 0)) return out
+        // Official overflow row: 28px meta row whose text starts at the icon
+        // gutter (34px) plus this node's indent.
+        const indent = { paddingLeft: 34 + depth * 12 }
+        if (limited.hidden > 0) {
+          out.push(E('button', {
+            key: 'lim-' + bucket,
+            type: 'button',
+            className: 'bw-row bw-overflow-row',
+            style: indent,
+            onClick: () => setSessionWatermarks((current) => {
+              const next = nextSessionWatermark(current[bucket], limited.hidden, sessionLimit)
+              if (next === sessionWatermarkOf(current[bucket], sessionLimit)) return current
+              return { ...current, [bucket]: next }
+            }),
+          }, t('sessions.expand', { n: limited.hidden })))
+        } else if (quota !== sessionLimit) {
+          // The expanded view is not a dead end, but only offer the way back
+          // when folding would actually hide rows.
+          const baseView = limitSessionsForRender(sessions, sessionLimit, false, currentId)
+          if (baseView.hidden > 0) {
+            out.push(E('button', {
+              key: 'lim-collapse-' + bucket,
+              type: 'button',
+              className: 'bw-row bw-overflow-row',
+              style: indent,
+              onClick: () => setSessionWatermarks((current) => {
+                if (!(bucket in current)) return current
+                const next = { ...current }
+                delete next[bucket]
+                return next
+              }),
+            }, t('sessions.collapse')))
+          }
+        }
         return out
       }
 
@@ -6325,10 +6551,21 @@ window.__ModuleLoader__.load({
           count,
           sessionsOpen: searching ? true : sessionsOpenOf(workspace.workspaceId),
           currentInside: wsHasCurrent(workspace),
-          onToggle: () => { if (!searching) actions.setSessionsExpanded(workspace.workspaceId, !sessionsOpenOf(workspace.workspaceId)) },
+          onToggle: () => {
+            if (searching) return
+            const next = !sessionsOpenOf(workspace.workspaceId)
+            // Closing hides the session tree (and any disk-nested children):
+            // reopen at the quota, not in the previously lifted state.
+            if (!next) clearSessionWatermarks(collectWorkspaceIds(workspace.sub, [workspace.workspaceId]))
+            actions.setSessionsExpanded(workspace.workspaceId, next)
+          },
           // Starting a session force-expands the workspace row: the user must
           // SEE the new session appear, even if the row was collapsed.
-          onStart: () => { actions.setSessionsExpanded(workspace.workspaceId, true); startSession(workspace.workspaceId) },
+          onStart: () => {
+          actions.setSessionsExpanded(workspace.workspaceId, true)
+          pendingWorkspaceReveal = { id: workspace.workspaceId, at: Date.now() }
+          startSession(workspace.workspaceId)
+        },
           onContextMenu: (e) => openCtx('workspace', workspace, e),
           // The in-row ellipsis is retired; the ctx surface stays the
           // right-click path. While the menu is open the row still pins
@@ -6360,7 +6597,7 @@ window.__ModuleLoader__.load({
         if (workspace.sub && !searching && sessionsOpenOf(workspace.workspaceId)) {
           rows.push(...renderLevelRows(workspace.sub, depth + 1))
         }
-        rows.push(...renderSessionTree(workspace, depth + 1))
+        rows.push(...renderSessionTree(workspace, depth))
         return rows
       }
 
@@ -6419,7 +6656,11 @@ window.__ModuleLoader__.load({
           node,
           depth,
           expanded,
-          onToggle: () => { if (!searching) actions.setExpanded(idPath, !expanded) },
+          onToggle: () => {
+            if (searching) return
+            if (expanded) clearSessionWatermarks(collectWorkspaceIds(node))
+            actions.setExpanded(idPath, !expanded)
+          },
           onContextMenu: (e) => openCtx('folder', { path: node.path, name: node.name, idPath, scope: node.scope, empty: countWorkspaces(node) === 0 }, e),
           dropInto: wsDropInto(idPath),
           dropSlot: wsFolderSlotOf(idPath),
@@ -6470,7 +6711,7 @@ window.__ModuleLoader__.load({
             role: 'treeitem',
             'aria-expanded': open,
           },
-            E('span', { className: cls('bw-chevron', open && 'bw-chevron-open') }, E('span', { className: 'bw-arrow' }, icon('IconTriangleRightFill14', 14))),
+            E('span', { className: cls('bw-chevron', open && 'bw-chevron-open') }, E('span', { className: 'bw-arrow' }, icon('IconTriangleRightFill14', 16))),
             E('span', { className: 'bw-row-label' }, t('group.ungrouped')),
             E('span', { className: 'bw-row-count' }, String(visible.length)),
           ))
@@ -6544,6 +6785,49 @@ window.__ModuleLoader__.load({
         return React.cloneElement(el, { 'data-row-key': rowKey, dataRowKey: rowKey })
       })
 
+      // v0.42.1: reveal a workspace created through either add flow. The
+      // official browser expands the group that holds the CURRENT session; a
+      // brand-new workspace has no current session yet, so the same intent is
+      // pinned here — expand the ancestors hiding it, then bring its row into
+      // view. bodyRowKeys is a fresh array every render, so the effect simply
+      // retries until the Host snapshot lands and the row mounts; the pending
+      // slot itself is bounded (see pendingWorkspaceReveal).
+      React.useEffect(() => {
+        const pending = pendingWorkspaceReveal
+        if (!pending) return
+        if (searching || groupBy === 'flat') { pendingWorkspaceReveal = null; return }
+        const chain = revealChainOf(tree, pending.id)
+        if (chain === null) {
+          if (Date.now() - pending.at > 8000) pendingWorkspaceReveal = null
+          return
+        }
+        for (const step of chain) {
+          if (step.kind === 'ws') actions.setSessionsExpanded(step.id, true)
+          else actions.setExpanded(step.idPath, true)
+        }
+        // v0.42.1: the row the user wants in view is the NEW SESSION, not the
+        // workspace header. startSession makes it current, and the shipped
+        // blank row is drawn only while current — so a current session that
+        // belongs to this workspace is exactly the one we just created.
+        actions.setSessionsExpanded(pending.id, true)
+        const owner = (items || []).find((workspace) => workspace.workspaceId === pending.id)
+        const freshId = owner && currentId && (owner.sessionIds || []).indexOf(currentId) !== -1 ? currentId : null
+        const host = treeRef.current
+        const pick = (key) => (host && typeof host.querySelector === 'function'
+          ? host.querySelector('[data-row-key="' + key + '"]')
+          : null)
+        const sessionRow = freshId ? pick('session:' + freshId) : null
+        // Give the Host a beat to publish the new membership before settling
+        // for the workspace header (the hero flow may not start a session).
+        const row = sessionRow || (Date.now() - pending.at > 1200 ? pick('ws-' + pending.id) : null)
+        if (!row) {
+          if (Date.now() - pending.at > 8000) pendingWorkspaceReveal = null
+          return
+        }
+        pendingWorkspaceReveal = null
+        try { row.scrollIntoView({ block: 'nearest' }) } catch (error) { /* non-fatal */ }
+      }, [bodyRowKeys])
+
       /* ------------------------- context menu ------------------------ */
 
       // Context-menu entries mirror the OFFICIAL row menus item-for-item
@@ -6565,6 +6849,15 @@ window.__ModuleLoader__.load({
         const ungroupItem = { id: 'move-out', label: t('menu.moveOutGroup'), icon: icon('IconRightUpOutline16', 16) }
         const sgroupItems = sessionSlash ? [groupItem] : []
         const sessionUngroupItems = sessionSlash && payload && payload.allowGroups !== false && groupPrefixOf(String(payload.title || '')) !== '' ? [ungroupItem] : []
+        // v0.42.1: a title that carries a "/" always offers the flat switch,
+        // grouped or not. Legacy mis-groups (the pre-0.39 plugin wrote prefixes
+        // through renameSession, so the host records them as source=user) have
+        // no provenance signal left — this is the non-destructive way back:
+        // the title is untouched, only the tree stops splitting it.
+        const flatNow = !!(payload && flatMap[payload.id])
+        const flatItems = sessionSlash && payload && groupPrefixOf(String(payload.title || '')) !== ''
+          ? [{ id: 'flat-toggle', label: t(flatNow ? 'menu.groupSession' : 'menu.flatSession'), icon: icon(flatNow ? 'IconFolderOpenOutline16' : 'IconRightUpOutline16', 16) }]
+          : []
         const official = (key, fallback) => {
           const value = typeof ot === 'function' ? ot(key) : null
           return typeof value === 'string' && value !== '' && value !== key ? value : fallback
@@ -6600,6 +6893,7 @@ window.__ModuleLoader__.load({
           }] : []),
           { type: 'separator', id: 'bw-sep' },
           ...sessionUngroupItems,
+          ...flatItems,
           ...sgroupItems,
           customizeEntry,
         ]
@@ -6610,12 +6904,17 @@ window.__ModuleLoader__.load({
         const summary = list && list.byId ? list.byId[payload.id] : undefined
         // Only a user-authored title has groups to leave; an automatic title's
         // "/" is prose (issue #19).
-        if (payload.allowGroups === false || (summary && groupsAllowedFor(summary) === false)) return
+        if (payload.allowGroups === false || (summary && groupsAllowedFor(summary, payload.title) === false)) return
         const title = String(payload.title || '')
         const leaf = leafOf(title)
         if (leaf !== title) Promise.resolve().then(() => renameByUser(payload.id, leaf)).catch(fail)
       }
       const pickSessionAction = (payload, id) => {
+        if (id === 'flat-toggle') {
+          const next = !(payload && flatMap[payload.id])
+          if (actions && typeof actions.setSessionFlat === 'function') actions.setSessionFlat(payload.id, next)
+          return true
+        }
         if (id === 'rename') { setDialog({ kind: 'sess-rename', session: payload }); return true }
         if (id === 'fork') { forkSession(payload.id); return true }
         if ((id === 'pin' || id === 'unpin') && pinAvailable) {
@@ -6851,8 +7150,13 @@ window.__ModuleLoader__.load({
         // The official session target carries only displayTitle, so provenance
         // is looked up by id here — the same list snapshot the rows render from.
         allowGroups: (sessionId) => {
+          if (flatMap[sessionId]) return false
           const summary = list && list.byId ? list.byId[sessionId] : undefined
-          return !summary || groupsAllowedFor(summary)
+          return !summary || groupsAllowedFor(summary, rowTitleOf(sessionId, summary, prefsMap.graftTitlePrefix !== false))
+        },
+        flatOf: (sessionId) => !!flatMap[sessionId],
+        setFlat: (sessionId, on) => {
+          if (actions && typeof actions.setSessionFlat === 'function') actions.setSessionFlat(sessionId, on)
         },
         label: (key) => t(key),
         archiveOptions: (workspaceId) => archiveFilterOptions(workspaceId),
@@ -6871,7 +7175,7 @@ window.__ModuleLoader__.load({
             ? { kind: 'workspace', id: payload.workspaceId, title }
             : { kind: 'session', id: payload.id, title }
           const summary = kind === 'session' && list && list.byId ? list.byId[payload.id] : undefined
-          const allowGroups = !summary || groupsAllowedFor(summary)
+          const allowGroups = !summary || groupsAllowedFor(summary, target.title)
           if (kind === 'session') target.allowGroups = allowGroups
           setDialog({
             kind: 'group-move',
@@ -7077,7 +7381,10 @@ window.__ModuleLoader__.load({
         return Promise.resolve()
           .then(() => createWorkspace({ path: String(path) }))
           .then((workspace) => {
-            if (workspace && workspace.workspaceId && typeof startSession === 'function') startSession(workspace.workspaceId)
+            if (workspace && workspace.workspaceId) {
+              pendingWorkspaceReveal = { id: workspace.workspaceId, at: Date.now() }
+              if (typeof startSession === 'function') startSession(workspace.workspaceId)
+            }
           })
           .catch((reason) => { fail(messageOf(reason)) })
           .then(() => setFlowBusy(false))
@@ -7525,6 +7832,17 @@ window.__ModuleLoader__.load({
                 id: 'bw-move-out',
                 label: bridge.label('menu.moveOutGroup'),
                 run: () => bridge.moveOut({ id: target.sessionId, title }),
+              })
+            }
+            // The flat switch is offered for ANY title carrying a "/", which is
+            // the only way a legacy mis-group (source=user, no provenance) can
+            // be undone without renaming it (v0.42.1).
+            if (bridge.slashes && bridge.slashes.session && bridge.groupPrefix && bridge.groupPrefix(title) !== '') {
+              const flatNow = !!(bridge.flatOf && bridge.flatOf(target.sessionId))
+              actions.push({
+                id: 'bw-flat-toggle',
+                label: bridge.label(flatNow ? 'menu.groupSession' : 'menu.flatSession'),
+                run: () => bridge.setFlat(target.sessionId, !flatNow),
               })
             }
             actions.push({

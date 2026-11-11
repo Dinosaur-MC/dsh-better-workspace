@@ -18,10 +18,10 @@ window.__ModuleLoader__.load({
       '.bw-header-title{flex:1;font-size:14px;font-weight:400;line-height:20px;color:var(--dsw-alias-label-tertiary,#9a9a9a);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
       '.bw-icon-btn{flex:none;width:24px;height:24px;border:none;background:transparent;border-radius:var(--dsw-radius-sm,6px);display:grid;place-items:center;color:var(--dsw-alias-label-secondary,#b8b8b8);cursor:pointer;padding:0}',
       '.bw-icon-btn:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.15));color:var(--dsw-alias-label-primary,#e6e6e6)}',
-      // Official row iconButton (Rows.module.css): a bare 16px tertiary
-      // square — the shipped strip buttons ride this, not the 24px
-      // toolbox button above.
-      '.bw-row-btn{flex:none;display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border:none;border-radius:var(--dsw-radius-xs,4px);padding:0;background:transparent;color:var(--dsw-alias-label-tertiary,#9a9a9a);cursor:pointer}',
+      // Official row iconButton (Rows.module.css): a 16px tertiary glyph in a
+      // 24px hit area (margin -4 keeps the optical gap) — the shipped strip
+      // buttons ride this, not the 24px toolbox button above.
+      '.bw-row-btn{flex:none;display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;margin:-4px;border:none;border-radius:var(--dsw-radius-xs,4px);padding:0;background:transparent;color:var(--dsw-alias-label-tertiary,#9a9a9a);cursor:pointer}',
       '.bw-row-btn:hover{color:var(--dsw-alias-label-primary,#e6e6e6)}',
       '.bw-row-btn:focus-visible{outline:var(--dsw-focus-ring-width,2px) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary,#5b8def));outline-offset:-2px}',
       // Focus ring parity with the shipped icon buttons (dsh 0.1.7-rc.2
@@ -46,27 +46,25 @@ window.__ModuleLoader__.load({
       // as the chevron-only button beside an input.
       '.bw-menu-block{display:block;width:100%}',
       '.bw-menu-inline{display:inline-block;width:auto;flex:none}',
-      '.bw-tree{--bw-row-h:34px;--bw-session-h:32px;flex:1;overflow-y:auto;overflow-x:hidden;padding:2px 6px 12px;min-height:0}',
+      '.bw-tree{--bw-row-h:34px;--bw-session-h:32px;flex:1;overflow-y:auto;overflow-x:hidden;padding:2px 4px 12px;min-height:0;scrollbar-gutter:stable}',
       '.bw-rows-exits{position:fixed;inset:0;contain:strict;overflow:clip;pointer-events:none}',
       '.bw-tree[data-bw-density="compact"]{--bw-row-h:28px;--bw-session-h:26px}',
       '.bw-tree[data-bw-density="roomy"]{--bw-row-h:40px;--bw-session-h:38px}',
-      '.bw-row{display:flex;align-items:center;gap:6px;height:var(--bw-row-h,34px);padding:0 8px;padding-inline-start:calc(8px + var(--bw-indent,0px));border-radius:var(--dsw-radius-md,8px);cursor:pointer;user-select:none;font-size:14px;line-height:20px;color:var(--dsw-alias-label-primary,#e6e6e6);position:relative;transition:height .15s ease-out,padding .15s ease-out}',
-      '.bw-drop-before::before{content:"";position:absolute;z-index:1;left:0;right:4px;top:-7px;height:12px;pointer-events:none;background:linear-gradient(55deg,transparent 0,var(--dsw-alias-state-business-primary,#5b8def) 50%,transparent 100%) 0 0/5px 7px no-repeat,linear-gradient(125deg,transparent 0,var(--dsw-alias-state-business-primary,#5b8def) 50%,transparent 100%) 0 5px/5px 7px no-repeat,linear-gradient(var(--dsw-alias-state-business-primary,#5b8def),var(--dsw-alias-state-business-primary,#5b8def)) 4px 5px/calc(100% - 4px) 2px no-repeat}',
-      '.bw-drop-after::after{content:"";position:absolute;z-index:1;left:0;right:4px;bottom:-7px;height:12px;pointer-events:none;background:linear-gradient(55deg,transparent 0,var(--dsw-alias-state-business-primary,#5b8def) 50%,transparent 100%) 0 0/5px 7px no-repeat,linear-gradient(125deg,transparent 0,var(--dsw-alias-state-business-primary,#5b8def) 50%,transparent 100%) 0 5px/5px 7px no-repeat,linear-gradient(var(--dsw-alias-state-business-primary,#5b8def),var(--dsw-alias-state-business-primary,#5b8def)) 4px 5px/calc(100% - 4px) 2px no-repeat}',
+      '.bw-row{display:flex;align-items:center;gap:6px;height:var(--bw-row-h,34px);margin-block:1px;padding:0 8px;padding-inline-start:calc(8px + var(--bw-indent,0px));border-radius:var(--dsw-radius-md,8px);cursor:pointer;user-select:none;font-size:14px;line-height:20px;color:var(--dsw-alias-label-primary,#e6e6e6);position:relative}',
+      // The reorder marker is copied from the official UI verbatim
+      // (dsh-client-ui-workspace Rows.module.css: .sessionRow.dropBefore /
+      // .dropAfter; the workspace section uses the same drawing at -8px).
+      // Three stacked gradients: a 2px diagonal nib at each end (5x7 each)
+      // over a 2px rule inset 4px from the left. It is an overlay OUTSIDE
+      // the row box (12px tall, top/bottom -7px) and never takes part in
+      // layout, which is what keeps the drop target stable under the pointer.
+      '.bw-drop-before::before{content:"";position:absolute;z-index:1;left:0;right:4px;top:-7px;height:12px;pointer-events:none;background:linear-gradient(55deg,transparent calc(50% - 1px),var(--dsw-alias-state-business-primary,#5b8def) calc(50% - 1px) calc(50% + 1px),transparent calc(50% + 1px)) 0 0/5px 7px no-repeat,linear-gradient(125deg,transparent calc(50% - 1px),var(--dsw-alias-state-business-primary,#5b8def) calc(50% - 1px) calc(50% + 1px),transparent calc(50% + 1px)) 0 5px/5px 7px no-repeat,linear-gradient(var(--dsw-alias-state-business-primary,#5b8def) 0 0) 4px 5px/calc(100% - 4px) 2px no-repeat}',
+      '.bw-drop-after::after{content:"";position:absolute;z-index:1;left:0;right:4px;bottom:-7px;height:12px;pointer-events:none;background:linear-gradient(55deg,transparent calc(50% - 1px),var(--dsw-alias-state-business-primary,#5b8def) calc(50% - 1px) calc(50% + 1px),transparent calc(50% + 1px)) 0 0/5px 7px no-repeat,linear-gradient(125deg,transparent calc(50% - 1px),var(--dsw-alias-state-business-primary,#5b8def) calc(50% - 1px) calc(50% + 1px),transparent calc(50% + 1px)) 0 5px/5px 7px no-repeat,linear-gradient(var(--dsw-alias-state-business-primary,#5b8def) 0 0) 4px 5px/calc(100% - 4px) 2px no-repeat}',
       '.bw-drop-into{outline:1.5px dashed var(--dsw-alias-brand-primary,#5b8def);outline-offset:-1.5px}',
       // Grouping drop lands on the header button / a group row: solid brand
       // rim + a tinted wash so "this drop joins a group" reads stronger than
       // the reorder dashes above.
       '.bw-drop-into-strong{outline:2px solid var(--dsw-alias-brand-primary,#5b8def);outline-offset:-2px;background:color-mix(in srgb, var(--dsw-alias-brand-primary,#5b8def) 16%, transparent)}',
-      // v0.36.1 edge-band reorder slot on group rows: the row SPLITS OPEN to
-      // twice its height so "a row will land here" is visible without
-      // staring for the thin official line. Both the height and the content
-      // slide are transitioned (padding, which CAN animate — align-items
-      // cannot, it teleports the content and feels janky), so the row
-      // opens/closes like a drawer, not a flash. The gap fills with a faint
-      // brand wash; the middle half of the row (drop-into) never opens.
-      '.bw-slot-above{padding-top:var(--bw-row-h,34px);background:linear-gradient(to bottom, color-mix(in srgb, var(--dsw-alias-brand-primary,#5b8def) 10%, transparent) 0, transparent calc(var(--bw-row-h,34px)))}',
-      '.bw-slot-below{padding-bottom:var(--bw-row-h,34px);background:linear-gradient(to top, color-mix(in srgb, var(--dsw-alias-brand-primary,#5b8def) 10%, transparent) 0, transparent calc(var(--bw-row-h,34px)))}',
       // Session drag whose source sits in a group: a quiet dashed line at the
       // bottom of the tree says "anywhere outside a group = out of it". Kept
       // faint on purpose — the row outlines are the loud feedback.
@@ -110,7 +108,10 @@ window.__ModuleLoader__.load({
       '.bw-row-current{background:color-mix(in srgb,#000 18%,transparent)}',
       'body:not([data-ds-dark-theme]) .bw-row-current{background:color-mix(in srgb,#fff 20%,transparent)}',
       '',
-      '.bw-row-icon{flex:none;width:16px;height:20px;display:inline-flex;align-items:center;justify-content:center;color:var(--dsw-alias-label-tertiary,#9a9a9a)}',
+      // Auto-assigned colours are an ACCENT on the glyph (official titles never
+      // leave --dsw-alias-label-primary); a manual hex pick still repaints the
+      // row through the inline color property.
+      '.bw-row-icon{flex:none;width:16px;height:20px;display:inline-flex;align-items:center;justify-content:center;color:var(--bw-auto-color,var(--dsw-alias-label-tertiary,#9a9a9a))}',
       '.bw-chevron{flex:none;display:inline-flex;align-items:center;justify-content:center;color:var(--dsw-alias-label-caption,#adb2b8)}',
       '.bw-chevron-open .bw-arrow{transform:rotate(90deg)}',
       '.bw-container-row .bw-chevron{display:none}',
@@ -137,7 +138,7 @@ window.__ModuleLoader__.load({
       // padding covers the widest rim (2px at the top of the slider). margin
       // cancels it, so text still starts and truncates where it did.
       '.bw-row-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:3px;margin:-3px}',
-      '.bw-session-row .bw-row-label{padding:0;margin:0 6px 0 4px}',
+      '.bw-session-row .bw-row-label{padding:0;margin:0 6px}',
       /* Marquee: Chromium keeps painting the ellipsis at the right edge of a
          scrolling ellipsis element (engine behavior; official rows share it).
          Switch to clip while scrolling — the fade masks carry both edges and
@@ -145,20 +146,20 @@ window.__ModuleLoader__.load({
       '.bw-session-row .bw-row-label[data-scrolled]{text-overflow:clip;mask-image:linear-gradient(to right,transparent,#000 12px);-webkit-mask-image:linear-gradient(to right,transparent,#000 12px)}',
       '.bw-session-row .bw-row-label[data-clipped]{mask-image:linear-gradient(to left,transparent,#000 12px);-webkit-mask-image:linear-gradient(to left,transparent,#000 12px)}',
       '.bw-session-row .bw-row-label[data-scrolled][data-clipped]{mask-image:linear-gradient(to right,transparent,#000 12px,#000 calc(100% - 12px),transparent);-webkit-mask-image:linear-gradient(to right,transparent,#000 12px,#000 calc(100% - 12px),transparent)}',
-      '.bw-row-count{flex:none;display:none;font-size:12px;color:var(--dsw-alias-label-quaternary,#8a8a8a)}',
+      '.bw-row-count{flex:none;display:none;font-size:12px;color:var(--dsw-alias-label-tertiary,#9a9a9a)}',
       '.bw-tree[data-bw-count] .bw-row-count{display:inline}',
-      '.bw-row-time{flex:none;font-size:10px;line-height:16px;color:var(--dsw-alias-label-tertiary,#9a9a9a)}',
+      '.bw-row-time{flex:none;font-size:10px;line-height:16px;color:var(--dsw-alias-label-tertiary,#9a9a9a);margin-inline-end:-1px}',
       // The outline is inherited from the row: the 10-12px meta column (session
       // count / relative time) opts out — stroked meta text outshines the title
       // it is supposed to support.
       '.bw-row-count,.bw-row-time{-webkit-text-stroke-width:0}',
       '.bw-row-trailing{flex:none;display:inline-flex;align-items:center;gap:6px;color:var(--dsw-alias-label-tertiary,#9a9a9a)}',
-      '.bw-row-actions{flex:none;display:none;align-items:center;gap:15px}',
-      '.bw-row:hover .bw-row-actions,.bw-row.menu-open .bw-row-actions{display:flex}',
-      '.bw-row:hover .bw-row-time,.bw-row:hover .bw-row-count,.bw-row:hover .bw-row-trailing,.bw-row:hover .bw-pin-indicator,.bw-row.menu-open .bw-row-time,.bw-row.menu-open .bw-row-count,.bw-row.menu-open .bw-row-trailing,.bw-row.menu-open .bw-pin-indicator{display:none}',
+      '.bw-row-actions{flex:none;display:none;align-items:center;gap:13px}',
+      '.bw-row:hover .bw-row-actions,.bw-row.menu-open .bw-row-actions{display:flex}\n      /* Official keyboard modality (Rows.module.css): a focused row reveals the\n         action strip just like hover does, and yields the meta column to it. */\n      html[data-input-modality="keyboard"] .bw-row:focus-within .bw-row-actions{display:flex}',
+      '.bw-row:hover .bw-row-time,.bw-row:hover .bw-row-count,.bw-row:hover .bw-row-trailing,.bw-row:hover .bw-pin-indicator,.bw-row.menu-open .bw-row-time,.bw-row.menu-open .bw-row-count,.bw-row.menu-open .bw-row-trailing,.bw-row.menu-open .bw-pin-indicator{display:none}\n      html[data-input-modality="keyboard"] .bw-row:focus-within .bw-row-time,html[data-input-modality="keyboard"] .bw-row:focus-within .bw-row-count,html[data-input-modality="keyboard"] .bw-row:focus-within .bw-row-trailing,html[data-input-modality="keyboard"] .bw-row:focus-within .bw-pin-indicator{display:none}',
       '.bw-row-archived .bw-row-label{color:var(--dsw-alias-label-caption,#8a8a8a)}',
       '.bw-pin-indicator{flex:none;display:inline-flex;align-items:center;justify-content:center;width:16px;height:20px;color:var(--dsw-alias-label-caption,#adb2b8);margin:0 0 0 6px}',
-      '.bw-overflow-row{display:block;width:100%;text-align:left;border:0;background:transparent;color:var(--dsw-alias-label-tertiary,#9a9a9a);font-size:12px;cursor:pointer;padding:4px 6px;font-family:inherit}',
+      '.bw-overflow-row{display:flex;align-items:center;width:100%;height:28px;text-align:left;border:0;background:transparent;color:var(--dsw-alias-label-tertiary,#9a9a9a);font-size:12px;cursor:pointer;padding:0 6px;font-family:inherit}',
       '.bw-overflow-row:hover{color:var(--dsw-alias-label-secondary,#b8b8b8)}',
       '.bw-dot{flex:none;width:6px;height:6px;border-radius:50%;background:transparent}',
       '.bw-session-row{font-size:14px;line-height:20px;color:var(--dsw-alias-label-primary,#e6e6e6);height:var(--bw-session-h,32px)}',

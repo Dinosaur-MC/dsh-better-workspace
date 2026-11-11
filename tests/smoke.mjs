@@ -115,6 +115,36 @@ test('client half loads dictionaries and styles as official package-local chunks
   assert.match(read('src/client.styles.js'), /return \{ CSS_TEXT \}/)
 })
 
+test('row chrome keeps the official metrics from the 2026-11 style pass', () => {
+  const css = read('src/client.styles.js')
+  // Dense 34px rows: the official list breathes 2px between rows, keeps the
+  // scrollbar gutter reserved, and uses 24px hit areas for 16px strip glyphs.
+  assert.match(css, /\.bw-tree\{[^}]*padding:2px 4px 12px[^}]*scrollbar-gutter:stable/)
+  assert.match(css, /\.bw-row\{[^}]*margin-block:1px/)
+  assert.match(css, /\.bw-row-btn\{[^}]*width:24px;height:24px;margin:-4px/)
+  assert.match(css, /\.bw-row-actions\{[^}]*gap:13px/)
+  // Keyboard modality reveals the strip and yields the meta column (official
+  // Rows.module.css rule); hover alone is not enough.
+  assert.match(css, /html\[data-input-modality="keyboard"\] \.bw-row:focus-within \.bw-row-actions\{display:flex\}/)
+  assert.match(css, /html\[data-input-modality="keyboard"\] \.bw-row:focus-within \.bw-row-time/)
+  // The overflow row is a 28px meta row; its inline indent starts at the
+  // official 34px icon gutter, not at the ordinary 8px row padding.
+  assert.match(css, /\.bw-overflow-row\{[^}]*height:28px[^}]*padding:0 6px/)
+  const client = clientText()
+  // A direct session sits at its workspace's own depth, exactly like the
+  // official projectRow/sessionRow pair: both start on the 34px icon gutter,
+  // and only a nested session group adds one more indent step.
+  assert.match(client, /paddingLeft: 34 \+ depth \* 12/)
+  assert.doesNotMatch(client, /renderSessionTree\(workspace, depth \+ 1\)/)
+  // Auto colour tokens paint the workspace glyph, not the label: official rows
+  // keep label-primary text, and only a manual hex pick owns the text colour.
+  assert.match(client, /const autoColor = isAutoColorToken\(appearance\.color\) && String\(key\)\.startsWith\('workspace:'\)/)
+  assert.match(client, /style\['--bw-auto-color'\] = color/)
+  assert.match(css, /\.bw-row-icon\{[^}]*color:var\(--bw-auto-color,/)
+  // 16px chevrons, matching the official tree glyph.
+  assert.match(client, /icon\('IconTriangleRightFill14', 16\)/)
+})
+
 test('client half registers the expected seats (v0.12.1)', () => {
   const text = clientText()
   assert.match(text, /slots\.inject\('sidebar\.workspaces'/)
@@ -256,11 +286,13 @@ test('v0.39.2: host title provenance, not title text, decides grouping (issue #1
   const text = clientText()
   assert.match(text, /const TITLE_SOURCE_KEY = 'betterWorkspace\/titleSource'/)
   assert.match(text, /const titleSourceOf = \(summary\) => \{/)
-  assert.match(text, /const groupsAllowedFor = \(summary\) => \{/)
-  assert.match(text, /source === undefined \|\| source === 'user'/)
-  // Both row families (ungrouped and inside a workspace) carry the decision.
-  assert.equal((text.match(/allowGroups: groupsAllowedFor\(summary\)/g) || []).length, 2,
-    'ungrouped and workspace session rows both carry provenance')
+  assert.match(text, /const deliberateGroupPrefix = \(title\) => \{/)
+  assert.match(text, /const groupsAllowedFor = \(summary, title\) => \{/)
+  assert.match(text, /const GROUP_HEAD_RE = \/\^\[A-Za-z0-9\]\[A-Za-z0-9\._@\+#-\]\{0,31\}\$\//)
+  // Both row families (ungrouped and inside a workspace) carry the decision,
+  // and both feed it the DISPLAYED title (a grafted user prefix groups too).
+  assert.equal((text.match(/allowGroups: !flatMap\[id\] && groupsAllowedFor\(summary, rowTitleOf\(/g) || []).length, 2,
+    'ungrouped and workspace session rows both carry provenance, gated by the per-session flat flag')
   assert.match(text, /splitTitleSegs\(row\.title, row\.allowGroups !== false\)/)
   assert.match(text, /if \(session\.allowGroups === false\) continue/,
     'opaque titles are not offered as group suggestions')
@@ -276,14 +308,43 @@ test('v0.39.2: host title provenance, not title text, decides grouping (issue #1
   const start = text.indexOf('const TITLE_SOURCE_KEY')
   const end = text.indexOf('const splitPlainSegs')
   assert.ok(start !== -1 && end > start, 'provenance helpers stay self-contained')
-  const { groupsAllowedFor } = new Function(text.slice(start, end) + '\nreturn { groupsAllowedFor }')()
-  const row = (source) => ({ projectionValues: { 'betterWorkspace/titleSource': source } })
-  assert.equal(groupsAllowedFor(row('user')), true, 'a user rename may group')
-  assert.equal(groupsAllowedFor(row('fallback')), false, 'a fallback auto-title never groups')
-  assert.equal(groupsAllowedFor(row('provider')), false, 'a provider auto-title never groups')
-  assert.equal(groupsAllowedFor(row(null)), false, 'an explicit null never groups')
-  assert.equal(groupsAllowedFor({}), true, 'a missing projection keeps the legacy text fallback')
-  assert.equal(groupsAllowedFor({ projectionValues: null }), true)
+  const { groupsAllowedFor, deliberateGroupPrefix } = new Function(text.slice(start, end) + '\nreturn { groupsAllowedFor, deliberateGroupPrefix }')()
+  const row = (source, title) => ({ title: title, projectionValues: { 'betterWorkspace/titleSource': source } })
+  assert.equal(groupsAllowedFor(row('user', 'web/a')), true, 'a user rename may group')
+  assert.equal(groupsAllowedFor(row('fallback', '你是谁/a')), false, 'a fallback auto-title never groups')
+  assert.equal(groupsAllowedFor(row('provider', 'prose/x')), false, 'a provider auto-title never groups')
+  assert.equal(groupsAllowedFor(row(null, 'a/b')), false, 'an explicit null never groups')
+  assert.equal(groupsAllowedFor({ title: 'dsh-plugin-find/task' }), true, 'a slug head keeps the legacy grouping')
+  assert.equal(groupsAllowedFor({}), false, 'a missing title groups nothing')
+  assert.equal(groupsAllowedFor({ title: '角色：资深前端/插件 UI 评审' }), false, 'prose with punctuation never groups')
+  assert.equal(groupsAllowedFor({ title: '你是文档/账本核对员。任务 id' }), false, 'a sentence head never groups')
+  assert.equal(groupsAllowedFor({ title: '你是 DSH 插件 @deepseek-ai/x' }), false)
+  assert.equal(groupsAllowedFor({ title: '仓库：G:/LAB/202608/x' }), false)
+  // A grafted display is proof of an authored prefix, so it groups even when
+  // the wire title itself is an automatic one.
+  assert.equal(groupsAllowedFor({ title: 'leafonly', projectionValues: { 'betterWorkspace/titleSource': 'provider' } }, 'A/leafonly'), true)
+  assert.equal(groupsAllowedFor({ title: 'prose/x', projectionValues: { 'betterWorkspace/titleSource': 'provider' } }, 'prose/x'), false)
+  assert.equal(deliberateGroupPrefix('web/前端'), true)
+  assert.equal(deliberateGroupPrefix('“web”/x'), true, 'a quoted slug head still counts')
+  assert.equal(deliberateGroupPrefix('plain'), false)
+  assert.equal(deliberateGroupPrefix('/abs/path'), false)
+  assert.equal(deliberateGroupPrefix('C:/Users/me'), false)
+
+  // v0.42.1: the per-session flat switch. Legacy mis-groups were written by the
+  // pre-0.39 plugin through renameSession, so the host records source=user and
+  // no provenance signal can tell them apart — the user needs a reversible
+  // opt-out that leaves the title untouched.
+  assert.match(text, /sessionFlat: \{\}/, 'the view store declares the flat map')
+  assert.match(text, /setSessionFlat: \(d, id, on\) => \{ if \(!d\.sessionFlat\) d\.sessionFlat = \{\}; if \(on\) d\.sessionFlat\[id\] = true; else delete d\.sessionFlat\[id\] \}/)
+  assert.match(text, /const flatMap = useStore \? \(useStore\(s => s\.sessionFlat\) \|\| \{\}\) : \{\}/)
+  assert.match(text, /if \(flatMap\[sessionId\]\) return false/, 'the official bridge honours the flag')
+  assert.match(text, /flatOf: \(sessionId\) => !!flatMap\[sessionId\]/)
+  assert.match(text, /if \(id === 'flat-toggle'\) \{/)
+  assert.match(text, /t\(flatNow \? 'menu.groupSession' : 'menu.flatSession'\)/)
+  assert.match(text, /id: 'bw-flat-toggle'/)
+  assert.match(text, /run: \(\) => bridge\.setFlat\(target\.sessionId, !flatNow\)/)
+  // The switch is offered for ANY title carrying a "/", grouped or flat.
+  assert.match(text, /const flatItems = sessionSlash && payload && groupPrefixOf\(String\(payload\.title \|\| ''\)\) !== ''/)
 })
 
 test('v0.39.2: title provenance projection folds session/title source.kind', async () => {
@@ -504,6 +565,12 @@ test('title cache: persisted key, batch learning, debounced save, bounded evicti
   assert.match(text, /title: rowTitleOf\(id, summary, prefsMap\.graftTitlePrefix !== false\)/)
   assert.match(text, /leaf: rowTitleOf\(id, summary, prefsMap\.graftTitlePrefix !== false\)/)
   assert.match(text, /rowTitleOf\(dialog\.sessionId, summary, prefsMap\.graftTitlePrefix !== false\)/)
+  // v0.42.1: only a prefix learned from a user-authored title may be grafted,
+  // and a user rename on the wire always stands verbatim.
+  assert.match(text, /remembered\[id\]\.keepPrefix === true/)
+  assert.match(text, /&& titleSourceOf\(summary\) !== 'user'\) \{/)
+  assert.match(text, /entry\.keepPrefix = source === 'user'/)
+  assert.match(text, /entry\.display = grafted/)
   // Manual renames forget the grafted display (authoritative rename).
   assert.match(text, /forgetDisplay\(String\(sessionId\)\)/)
   // Drive the real block with a mocked localStorage.
@@ -515,10 +582,17 @@ test('title cache: persisted key, batch learning, debounced save, bounded evicti
     getItem: (k) => (saved.has(k) ? saved.get(k) : null),
     setItem: (k, v) => { saved.set(k, String(v)) },
   }
-  const scope = new Function('localStorage', 'setTimeout', 'clearTimeout',
+  const scope = new Function('localStorage', 'setTimeout', 'clearTimeout', 'titleSourceOf', 'deliberateGroupPrefix',
     text.slice(start, end)
     + '\nreturn { titleCache, loadTitleCache, rememberAllTitles, graftTitleDisplay, TITLE_CACHE_LIMIT, TITLE_CACHE_KEEP }')
-  const api = scope(fakeLocalStorage, setTimeout, clearTimeout)
+  const api = scope(
+    fakeLocalStorage,
+    setTimeout,
+    clearTimeout,
+    (summary) => (summary && summary.projectionValues
+      ? summary.projectionValues['betterWorkspace/titleSource']
+      : undefined),
+    (value) => /^[A-Za-z0-9][A-Za-z0-9._@+#-]{0,31}$/.test(String(value || '').split('/')[0].trim()))
   // Hydration: existing persisted state replaces the empty seed.
   saved.set('dsh.betterWorkspace.titles.v1', JSON.stringify({ byId: { old: { title: 'a/b', at: 1 } } }))
   api.loadTitleCache()
@@ -564,6 +638,23 @@ test('title cache: persisted key, batch learning, debounced save, bounded evicti
   api.rememberAllTitles(list4)
   assert.equal(api.titleCache.byId.g1.title, 'Other/renamed')
   assert.equal(api.titleCache.byId.g1.display, undefined, 'grouped rename clears the display')
+  // v0.42.1 ghost-group regression (issue #25): a prose auto title must not
+  // establish a prefix, and a later user rename must never inherit one.
+  api.rememberAllTitles({ byId: { h1: { title: '为什么你用 subagents/agent 团队' } } })
+  assert.equal(api.titleCache.byId.h1.keepPrefix, false, 'a sentence head is not an authored prefix')
+  assert.equal(api.titleCache.byId.h1.display, undefined)
+  api.rememberAllTitles({ byId: { h1: { title: '轮询 wait_agent 的依据质疑', projectionValues: { 'betterWorkspace/titleSource': 'user' } } } })
+  assert.equal(api.titleCache.byId.h1.display, undefined, 'a user rename stands verbatim')
+  // A user-authored prefix survives an automatic leaf rename …
+  const list5 = { byId: { g1: { title: 'auto leaf', projectionValues: { 'betterWorkspace/titleSource': 'provider' } } } }
+  api.rememberAllTitles(list5)
+  assert.equal(api.titleCache.byId.g1.display, 'Other/auto leaf', 'a user prefix survives an auto rename')
+  assert.equal(api.titleCache.byId.g1.keepPrefix, true)
+  // … and a machine-grouped title never starts one.
+  api.rememberAllTitles({ byId: { h2: { title: 'web/auto', projectionValues: { 'betterWorkspace/titleSource': 'provider' } } } })
+  assert.equal(api.titleCache.byId.h2.keepPrefix, false, 'a provider title never becomes a prefix')
+  api.rememberAllTitles({ byId: { h2: { title: 'next leaf', projectionValues: { 'betterWorkspace/titleSource': 'provider' } } } })
+  assert.equal(api.titleCache.byId.h2.display, undefined)
 })
 
 /**
@@ -1272,11 +1363,191 @@ test('issue round: exports fix, icon pick, ungrouped fold, tri-state, quota (v0.
   // the first 50 non-blank rows, the shipped watermark's auto cap); the
   // overflow row rides the legacy sessions.expand copy; search bypasses the
   // quota.
-  assert.match(text, /row\.blank \|\| row\.running \|\| row\.subagents > 0 \|\| row\.pinned/)
+  // v0.42.1: the attention set no longer partitions the list — it raises the
+  // watermark to its own position, so the open row stays where the Host put it.
+  assert.match(text, /const attention = \(index <= SESSION_ATTENTION_WINDOW && \(row\.running \|\| row\.subagents > 0 \|\| row\.pending \|\| row\.completed \|\| row\.id === currentId\)\) \|\| row\.pinned/)
   assert.match(text, /const SESSION_ATTENTION_WINDOW = 50/)
+  assert.doesNotMatch(text, /\[\.\.\.keep, \.\.\.idle\.slice\(0, limit\)\]/, 'the quota keeps list order')
   assert.match(text, /row\.pending \|\| row\.completed \|\| row\.id === currentId/)
-  assert.match(text, /limitSessionsForRender\(full, sessionLimit, limitLifted\[workspace\.workspaceId\], currentId\)/)
+  // Quota is per NODE, not per workspace: the workspace's own direct sessions
+  // and every session group each run the same base count, so a subgroup can no
+  // longer eat the root's quota (the reported "root shows only one" bug).
+  assert.match(text, /const bucketOf = \(workspaceId, path\) => workspaceId \+ '\|' \+ \(path \|\| ''\)/)
+  assert.match(text, /const quota = searching/)
+  assert.match(text, /: sessionWatermarkOf\(sessionWatermarks\[bucket\], sessionLimit\)/)
+  assert.match(text, /out\.push\(\.\.\.renderSessionRows\(view\.sessions \|\| \[\], workspaceId, view\.path, depth\)\)/)
   assert.match(text, /t\('sessions\.expand', \{ n: limited\.hidden \}\)/)
+})
+
+/**
+ * v0.42.1: the official collapsed group drops its watermark when it closes and
+ * comes back at the base count. The plugin's quota is a per-workspace lift
+ * flag, so closing the workspace (or any folder that hides it) must discard
+ * that flag — otherwise reopening the workspace shows the full list forever.
+ * A lifted list keeps its own way back through sessions.collapse.
+ */
+test('session quota: collapsing drops lifted rows; a lifted list keeps a collapse row', () => {
+  const text = clientText()
+  // The pure walker is sliceable so the smoke suite can exercise real tree
+  // shapes instead of trusting a regex.
+  const start = text.indexOf('const collectWorkspaceIds =')
+  assert.ok(start > 0, 'collectWorkspaceIds exists')
+  const end = text.indexOf('const SESSION_ATTENTION_WINDOW', start)
+  assert.ok(end > start, 'walker sits before the quota constants')
+  const { collectWorkspaceIds } = new Function(text.slice(start, end) + '\nreturn { collectWorkspaceIds }')()
+  const level = {
+    folders: [
+      { kind: 'group', folders: [], workspaces: [{ workspaceId: 'f1', sub: null }] },
+      { kind: 'ws', workspace: { workspaceId: 'f2' } },
+    ],
+    workspaces: [
+      { workspaceId: 'w1', sub: { folders: [], workspaces: [{ workspaceId: 'w2', sub: null }] } },
+    ],
+  }
+  assert.deepEqual(collectWorkspaceIds(level).sort(), ['f1', 'f2', 'w1', 'w2'])
+  assert.deepEqual(collectWorkspaceIds(null), [])
+  assert.deepEqual(collectWorkspaceIds({ folders: [], workspaces: [] }, ['seed']), ['seed'])
+
+  // The raise rule is the official one: one click adds one base step, and the
+  // step that would leave at most a base's worth hidden reveals everything.
+  const wmStart = text.indexOf('const sessionWatermarkOf =')
+  assert.ok(wmStart > 0, 'the watermark helpers exist')
+  const wmEnd = text.indexOf('const createViewStore', wmStart)
+  assert.ok(wmEnd > wmStart, 'the helpers sit before the store')
+  const { sessionWatermarkOf, nextSessionWatermark } = new Function(text.slice(wmStart, wmEnd) + '\nreturn { sessionWatermarkOf, nextSessionWatermark }')()
+  assert.equal(sessionWatermarkOf(undefined, 5), 5, 'no stored mark means the base count')
+  assert.equal(sessionWatermarkOf(0, 5), 5)
+  assert.equal(sessionWatermarkOf(10, 5), 10, 'a raised mark survives')
+  assert.equal(sessionWatermarkOf(Infinity, 5), Infinity)
+  assert.equal(sessionWatermarkOf(7, 0), Infinity, 'quota off shows everything')
+  assert.equal(nextSessionWatermark(5, 12, 5), 10, 'one click adds one step')
+  assert.equal(nextSessionWatermark(10, 6, 5), 15, 'a still-long tail just steps again')
+  assert.equal(nextSessionWatermark(10, 5, 5), Infinity, 'the last step reveals the rest')
+  assert.equal(nextSessionWatermark(5, 20, 0), Infinity, 'off stays off')
+
+  // Closing a workspace drops the marks for it and its disk-nested children.
+  assert.match(text, /const next = !sessionsOpenOf\(workspace\.workspaceId\)/)
+  assert.match(text, /if \(!next\) clearSessionWatermarks\(collectWorkspaceIds\(workspace\.sub, \[workspace\.workspaceId\]\)\)/)
+  // Closing a name/disk folder drops every mark underneath it.
+  assert.match(text, /if \(expanded\) clearSessionWatermarks\(collectWorkspaceIds\(node\)\)/)
+  // Closing a session group drops its own bucket and every nested one.
+  assert.match(text, /if \(open\) clearNodeWatermarks\(workspaceId, group\.path\)/)
+  assert.match(text, /key === root \|\| key\.startsWith\(root \+ '\/'\)/)
+  // The lifted view is not a dead end: it renders a sessions.collapse row.
+  assert.match(text, /t\('sessions\.collapse'\)/)
+  assert.match(text, /return \{ \.\.\.current, \[bucket\]: next \}/)
+  assert.doesNotMatch(text, /liftedNow/, 'the old per-workspace lift flag is gone')
+})
+
+/**
+ * v0.42.1: the quota is a WINDOW over the list, not a re-partition. The shipped
+ * browser keeps list order and raises the watermark to cover an attention row
+ * (requiredWatermark); it never moves that row to the front. The plugin used to
+ * return [...keep, ...idle.slice(0, limit)], so opening any Session inside the
+ * quota pulled it to the top of its node AND put one extra row on screen — the
+ * reported "打开会话会自动置顶，展开的会话数也会变".
+ */
+test('session quota: the open row keeps its place and never adds a row', () => {
+  const text = clientText()
+  const start = text.indexOf('const SESSION_ATTENTION_WINDOW')
+  assert.ok(start > 0, 'the quota helpers exist')
+  const end = text.indexOf('const createViewStore', start)
+  assert.ok(end > start, 'the helpers sit before the store')
+  const { limitSessionsForRender } = new Function(text.slice(start, end) + '\nreturn { limitSessionsForRender }')()
+  const row = (id, extra) => ({ id, blank: false, running: false, subagents: 0, pinned: false, pending: false, completed: false, ...extra })
+  const rows = ['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8'].map((id) => row(id))
+
+  // Inside the quota the open row keeps its slot: same rows, same order.
+  const inside = limitSessionsForRender(rows, 5, false, 's3')
+  assert.deepEqual(inside.rows.map((r) => r.id), ['s1', 's2', 's3', 's4', 's5'], 'no hoist, no extra row')
+  assert.equal(inside.hidden, 3)
+
+  // Beyond the quota the watermark rises to that row, exactly like the shipped
+  // requiredWatermark; the tail beyond it still folds.
+  const beyond = limitSessionsForRender(rows, 5, false, 's7')
+  assert.deepEqual(beyond.rows.map((r) => r.id), ['s1', 's2', 's3', 's4', 's5', 's6', 's7'])
+  assert.equal(beyond.hidden, 1)
+
+  // Attention rows raise the window too; blanks ride on top without a slot.
+  const running = limitSessionsForRender([row('a'), row('b'), row('c'), row('d', { running: true }), row('e'), row('f')], 2, false, null)
+  assert.deepEqual(running.rows.map((r) => r.id), ['a', 'b', 'c', 'd'])
+  assert.equal(running.hidden, 2)
+  const withBlank = limitSessionsForRender([row('new', { blank: true }), ...rows], 5, false, null)
+  assert.deepEqual(withBlank.rows.map((r) => r.id), ['new', 's1', 's2', 's3', 's4', 's5'])
+  assert.equal(withBlank.hidden, 3, 'the placeholder never consumes a slot')
+
+  // Past the official auto cap an attention row no longer raises the window.
+  const long = Array.from({ length: 60 }, (_, i) => row('x' + i, i === 54 ? { completed: true } : {}))
+  const capped = limitSessionsForRender(long, 5, false, null)
+  assert.equal(capped.rows.length, 5)
+  assert.equal(capped.hidden, 55)
+
+  // Off/lifted still means everything.
+  assert.equal(limitSessionsForRender(rows, 0, false, 's3').rows.length, 8)
+  assert.equal(limitSessionsForRender(rows, 5, true, 's3').rows.length, 8)
+})
+
+/**
+ * v0.42.1: a workspace created through either add flow must land in view — the
+ * official browser expands the group holding the current session, but a brand
+ * new workspace has no current session yet and may sit behind a collapsed
+ * workspace or name folder. The two adoption paths deposit the id in one
+ * module-level slot; the browser expands that ancestor chain and scrolls the
+ * row into view once the Host snapshot has landed.
+ */
+test('workspace reveal: ancestor chain walker + both adopt paths arm the reveal', () => {
+  const text = clientText()
+  const start = text.indexOf('const revealChainOf =')
+  assert.ok(start > 0, 'revealChainOf exists')
+  const end = text.indexOf('const collectWorkspaceIds =', start)
+  assert.ok(end > start, 'walker sits beside the tree helpers')
+  const { revealChainOf } = new Function(text.slice(start, end) + '\nreturn { revealChainOf }')()
+  const nested = {
+    seq: [
+      { kind: 'folder', node: {
+        idPath: 'g1',
+        folders: [{ idPath: 'g1/g2', folders: [], workspaces: [{ workspaceId: 'deep', sub: null }] }],
+        workspaces: [],
+      } },
+      { kind: 'ws', entry: { workspaceId: 'root', sub: null } },
+      { kind: 'ws', entry: { workspaceId: 'host', sub: {
+        folders: [],
+        workspaces: [{ workspaceId: 'nested', sub: null }],
+      } } },
+    ],
+  }
+  assert.deepEqual(revealChainOf(nested, 'root'), [], 'a root workspace needs no expansion')
+  assert.deepEqual(revealChainOf(nested, 'deep'), [
+    { kind: 'folder', idPath: 'g1' },
+    { kind: 'folder', idPath: 'g1/g2' },
+  ], 'name folders expand outer-first')
+  assert.deepEqual(revealChainOf(nested, 'nested'), [{ kind: 'ws', id: 'host' }], 'disk-nested child expands its workspace')
+  assert.deepEqual(revealChainOf({ workspaces: [{ workspaceId: 'flat', sub: null }] }, 'flat'), [], 'level without seq still walks')
+  assert.equal(revealChainOf(nested, 'missing'), null, 'unknown ids stay pending')
+  assert.equal(revealChainOf(null, 'x'), null)
+  // A chain-compressed folder can itself stand for a workspace.
+  const compressed = { seq: [{ kind: 'folder', node: {
+    kind: 'ws',
+    workspace: { workspaceId: 'compressed', sub: { workspaces: [{ workspaceId: 'inner', sub: null }] } },
+  } }] }
+  assert.deepEqual(revealChainOf(compressed, 'inner'), [{ kind: 'ws', id: 'compressed' }], 'compressed chain expands as a workspace')
+
+  // Both adoption paths arm the module-level slot before navigating.
+  assert.match(text, /pendingWorkspaceReveal = \{ id: workspace\.workspaceId, at: Date\.now\(\) \}/)
+  assert.equal((text.match(/pendingWorkspaceReveal = \{ id: workspace\.workspaceId, at: Date\.now\(\) \}/g) || []).length, 3,
+    'sidebar adopt, hero adopt and the workspace row + button all reveal')
+  // The browser effect expands, scrolls, and clears; flat/search cannot show a workspace row.
+  assert.match(text, /const chain = revealChainOf\(tree, pending\.id\)/)
+  // v0.42.1: the reveal target is the NEW SESSION row, not the workspace
+  // header; the workspace header is only the fallback after a short grace.
+  assert.match(text, /actions\.setSessionsExpanded\(pending\.id, true\)/)
+  assert.match(text, /const freshId = owner && currentId && \(owner\.sessionIds \|\| \[\]\)\.indexOf\(currentId\) !== -1 \? currentId : null/)
+  assert.match(text, /const sessionRow = freshId \? pick\('session:' \+ freshId\) : null/)
+  assert.match(text, /const row = sessionRow \|\| \(Date\.now\(\) - pending\.at > 1200 \? pick\('ws-' \+ pending\.id\) : null\)/)
+  assert.match(text, /pick\('session:' \+ freshId\)/,
+    'the session row is queried by its data-row-key')
+  assert.match(text, /row\.scrollIntoView\(\{ block: 'nearest' \}\)/)
+  assert.match(text, /if \(searching \|\| groupBy === 'flat'\) \{ pendingWorkspaceReveal = null; return \}/)
 })
 
 /**
@@ -2192,13 +2463,28 @@ test('v0.30.2: rowTitleOf grafts the remembered display while the wire stays gro
   const start = text.indexOf('const remembered = (titleCacheRef')
   const end = text.indexOf('// Learn real titles from every snapshot')
   assert.ok(start !== -1 && end !== -1 && start < end, 'rowTitleOf block not found')
-  const { rowTitleOf } = new Function('sessionTitleOf', 'titleCacheRef', 't',
+  const { rowTitleOf } = new Function('sessionTitleOf', 'titleCacheRef', 't', 'titleSourceOf',
     text.slice(start, end) + '\nreturn { rowTitleOf }')(
     (summary, t, remembered) => 'fallback:' + (summary && summary.title),
-    { getSnapshot: () => ({ byId: { s1: { title: 'A/prev', display: 'A/prev' } }, rememberAllTitles() {} }) },
-    (k) => k)
+    {
+      getSnapshot: () => ({
+        byId: {
+          s1: { title: 'A/prev', display: 'A/prev', keepPrefix: true },
+          s2: { title: 'A/legacy', display: 'A/legacy' },
+        },
+      }),
+      rememberAllTitles() {},
+    },
+    (k) => k,
+    (summary) => (summary && summary.projectionValues
+      ? summary.projectionValues['betterWorkspace/titleSource']
+      : undefined))
   assert.equal(rowTitleOf('s1', { title: 'bare' }, true), 'A/prev',
-    'group-less wire + remembered display: the grafted title wins')
+    'group-less wire + user-authored remembered display: the grafted title wins')
+  assert.equal(rowTitleOf('s2', { title: 'bare' }, true), 'fallback:bare',
+    'a cache entry without prefix provenance never grafts (self-healing old cache)')
+  assert.equal(rowTitleOf('s1', { title: 'bare', projectionValues: { 'betterWorkspace/titleSource': 'user' } }, true),
+    'fallback:bare', 'a user rename stands verbatim, never under a stale prefix')
   assert.equal(rowTitleOf('s1', { title: 'A/kept' }, true), 'fallback:A/kept',
     'a grouped wire title always stands (the display is not consulted)')
   assert.equal(rowTitleOf('s1', { title: 'X/newgroup/leaf' }, true), 'fallback:X/newgroup/leaf',
@@ -2365,34 +2651,38 @@ test('v0.36.0: folder rows drag as whole groups (members retitled under the targ
     'the render hands the row both keys and the node')
 })
 
-test('v0.36.1: group rows use a content-band hover (outer reorder + middle into) with a growing slot', () => {
+test('v0.42.1: every reorder target carries the official 12px insert line (drawer slot retired)', () => {
   const text = clientText()
-  // v0.36.4 judges the bands against the row's ORIGINAL position: an open
-  // slot pads the row with one logical row (--bw-row-h) via PADDING, so the
-  // row box is twice as tall while the original position is the half the
-  // content did NOT slide into (pad above for a before-slot, remaining
-  // content box for an after-slot). Judging there keeps a still pointer from
-  // flipping the slot when it opens (the "抽搐" report) and still lets the
-  // pointer cross the original midpoint to switch direction; the vacated
-  // half answers null so the caller keeps its current target.
-  assert.match(text, /const originalBoxOf = \(el\) => \{/,
-    'the original-position helper exists')
-  assert.match(text, /if \(padTop > 0\) return \{ top: rect\.top, bottom: rect\.top \+ padTop \}/,
-    'a before-slot judges the pad half (its original position)')
-  assert.match(text, /if \(padBottom > 0\) return \{ top: rect\.top, bottom: rect\.bottom - padBottom \}/,
-    'an after-slot judges the content-box half (its original position)')
-  assert.match(text, /const rowZone = \(event\) => \{/,
-    'a band-split rowZone helper exists')
+  // Ported from the official UI (dsh-client-ui-workspace): SessionNodeItem's
+  // rowHalf / the workspace section's workspaceGroupHalf both read the PLAIN
+  // row rect, and the marker is a 12px overlay drawn over the row boundary.
+  // Nothing this drag does resizes the measured row, which is exactly why the
+  // official indicator does not flicker. The v0.36.x drawer slot grew the row
+  // and therefore had to judge the pointer against an "original" box.
+  assert.doesNotMatch(text, /originalBoxOf|pointerInRowBox|slotOpen/,
+    'the slot-era geometry helpers are retired')
+  assert.doesNotMatch(text, /bw-slot-above|bw-slot-below/,
+    'no drawer slot survives in code or CSS')
+  assert.doesNotMatch(text, /transition:height \.15s ease-out/,
+    'a row never animates its height under a drag')
+  assert.match(text, /const rowHalf = \(event\) => \{\n        const box = event\.currentTarget\.getBoundingClientRect\(\)/,
+    'rowHalf reads the plain row rect (official midpoint)')
+  assert.match(text, /return y < box\.top \+ box\.height \/ 2 \? 'before' : 'after'/,
+    'the split is the official vertical midpoint')
+  assert.match(text, /const rowZone = \(event\) => \{\n        const box = event\.currentTarget\.getBoundingClientRect\(\)/,
+    'rowZone reads the same plain rect')
   assert.match(text, /if \(y < box\.top \|\| y > box\.bottom\) return null/,
-    'the vacated half answers null instead of a stale band')
+    'a pointer outside the row answers null (the neighbour owns that frame)')
   assert.match(text, /if \(h < 2\) return 'into'/,
     'a zero-height row answers into')
   assert.match(text, /const rel = \(y - box\.top\) \/ h\n        if \(rel < 0\.3\) return 'before'\n        if \(rel > 0\.7\) return 'after'\n        return 'into'/,
-    'the original row is split 30/40/30 into before/into/after')
+    'container rows keep the 30/40/30 before/into/after split')
   assert.match(text, /if \(half === null\) return/,
-    'a workspace row keeps its slot while the pointer rests in the vacated half')
-  assert.match(text, /if \(zone === null\) \{/,
-    'a group row keeps its slot while the pointer rests in the vacated half')
+    'a workspace row leaves an outside-row frame to its neighbour')
+  assert.match(text, /if \(zone === null\) return/,
+    'a group row does the same')
+  assert.match(text, /const zone = rowZone\(event\)\n/,
+    'the folder hover re-reads the bands every frame (no slot memory)')
   // Siblings only for a band reorder: the target must share the parent whose
   // name list is being permuted, or no list position exists for the source.
   assert.match(text, /zone !== 'into' && parentKeyOf\(idPath\) !== parentKeyOf\(drag\.source\.idPath\)/,
@@ -2407,24 +2697,24 @@ test('v0.36.1: group rows use a content-band hover (outer reorder + middle into)
     'the source subtree is filtered out of the target block before anchoring')
   assert.match(text, /const anchor = zone === 'after'\n          \? targetMembers\[targetMembers\.length - 1\]\n          : targetMembers\[0\]/,
     'before anchors the surviving block head, after its tail')
-  // Slot visuals: the row keeps its logical height and grows by PADDING
-  // (transitionable; align-items cannot animate), so the total box is two
-  // rows and the original position stays addressable by originalBoxOf. The
-  // gap itself is the feedback: a faint brand wash, no insert line.
-  assert.match(text, /\.bw-slot-above\{padding-top:var\(--bw-row-h,34px\);background:linear-gradient/,
-    'the above slot slides content down and washes the gap')
-  assert.match(text, /\.bw-slot-below\{padding-bottom:var\(--bw-row-h,34px\);background:linear-gradient/,
-    'the below slot slides content up and washes the gap')
-  assert.doesNotMatch(text, /height:calc\(var\(--bw-row-h,34px\)\*2\)/,
-    'the slot never doubles the declared height (padding alone grows the box)')
-  assert.match(text, /transition:height \.15s ease-out,padding \.15s ease-out/,
-    'the row height and content slide are both animated')
-  assert.match(text, /dropSlot === 'before' && 'bw-slot-above'/,
-    'FolderRow opens the slot the moment the band is hit')
-  assert.match(text, /dropHalf === 'before' && 'bw-slot-above'/,
-    'WorkspaceRow opens the slot the same way (the blue line is gone)')
+  // Visuals: the official drawing — a 12px overlay sitting ON the boundary
+  // (two 5x7 diagonal nibs + a 2px rule inset 4px). It never joins layout.
+  assert.match(text, /\.bw-drop-before::before\{[^}]*top:-7px;height:12px/,
+    'the before marker sits on the row boundary, 12px tall')
+  assert.match(text, /\.bw-drop-after::after\{[^}]*bottom:-7px;height:12px/,
+    'the after marker mirrors it')
+  assert.match(text, /linear-gradient\(55deg,transparent calc\(50% - 1px\)/,
+    'left nib: the official 2px diagonal stops')
+  assert.match(text, /0 5px\/5px 7px no-repeat/,
+    'the two nibs stack at 5px 7px like the official rule')
+  assert.match(text, /4px 5px\/calc\(100% - 4px\) 2px no-repeat/,
+    'the rule is 2px tall, inset 4px from the left')
+  assert.match(text, /dropSlot === 'before' && 'bw-drop-before'/,
+    'FolderRow wears the official marker on the before band')
+  assert.match(text, /dropHalf === 'before' && 'bw-drop-before'/,
+    'WorkspaceRow wears the same marker (one indicator for every target)')
   assert.match(text, /dropSlot: wsFolderSlotOf\(idPath\)/,
-    'the render derives the slot from the hover zone')
+    'the render derives the marker from the hover zone')
   assert.doesNotMatch(text, /slotArmed|wsFolderSlotArmed/,
     'no armed flag survives: the slot is immediate')
   assert.doesNotMatch(text, /scheduleFolderHoverExpand|folderHoverTimer|folderSlotLock/,
@@ -2524,7 +2814,7 @@ test('v0.36.4: group order is persisted per parent and drives the tree sort', ()
     'the order rides the existing persisted view store')
 })
 
-test('v0.36.4: an open reorder slot splits the original row at its midpoint (no INTO flip)', () => {
+test('v0.42.1: the insert marker is an overlay — geometry is re-read every frame (no slot memory)', () => {
   const text = clientText()
   // fail() lives in BetterBrowser; setFlowOpen lives in WorkspacePicker. Crossing that
   // fiber boundary threw ReferenceError on every failure path (v0.36.4 fix).
@@ -2532,27 +2822,24 @@ test('v0.36.4: an open reorder slot splits the original row at its midpoint (no 
     'fail() must not reach for the picker-scoped setFlowOpen')
   assert.match(text, /const fail = \(text\) => \{ settleWorkspaceRequest\(\); setDialog\(null\); setErrorText/,
     'fail() settles a bridged request, closes the dialog and surfaces the error text')
-  // THE flicker behind "变下级还是会被撑开" on the row being reordered: the
-  // three bands were re-judged on the PADDED row, so a still pointer sitting
-  // in the middle band flipped the just-opened slot to INTO on the next
-  // dragover frame — the slot closed, and the drop handed
-  // commitFolderMoveInto (a same-level no-op) instead of the reorder the
-  // user aimed at.
-  assert.equal((text.match(/const slotOpen = /g) || []).length, 1,
-    'the slot-open probe exists exactly once')
-  assert.match(text, /const slotOpen = drag\.over !== null && drag\.over\.kind === 'folder' && drag\.over\.target === idPath && \(drag\.over\.zone === 'before' \|\| drag\.over\.zone === 'after'\)/,
-    'the row knows whether it already holds this drag slot')
-  assert.match(text, /const pointerInRowBox = \(event\) => \{/,
-    'v0.36.10: a helper tells the slot padding apart from the content box')
-  assert.match(text, /const zone = slotOpen\n            \? \(pointerInRowBox\(event\) \? rowZone\(event\) : rowHalf\(event\)\)\n            : rowZone\(event\)/,
-    'an open slot keeps its verdict on the padding band but RE-JUDGES the three bands in the content box — the INTO middle stays reachable after entering through an edge')
-  // rowHalf is the plain midpoint split of the ORIGINAL position: no INTO band.
-  assert.match(text, /return y < \(box\.top \+ box\.bottom\) \/ 2 \? 'before' : 'after'/,
-    'rowHalf splits at the original midpoint with no middle band')
-  // The pointer in the vacated half must keep the slot: re-deciding on the
-  // padded geometry is exactly what flickered.
-  assert.match(text, /if \(zone === null\) \{\n              if \(drag\.over && drag\.over\.kind === 'folder' && drag\.over\.target === idPath && \(drag\.over\.zone === 'before' \|\| drag\.over\.zone === 'after'\)\) \{/,
-    'a pointer in the vacated half keeps this row open slot')
+  // Why the official form is stable: the 12px marker is painted OVER the row
+  // boundary and none of the reorder code changes the row's box. The retired
+  // drawer slot grew the row, so a still pointer fell into padding the drag
+  // itself had created, the three bands re-judged on the grown box, and the
+  // verdict flipped to INTO ("抽搐"). Both helpers now measure the live rect,
+  // so a re-judged frame lands on the same band.
+  assert.doesNotMatch(text, /const slotOpen = /, 'no slot-open memory survives')
+  assert.doesNotMatch(text, /pointerInRowBox/, 'no padding/content-box split survives')
+  assert.equal((text.match(/const zone = rowZone\(event\)/g) || []).length, 1,
+    'the folder hover re-reads the bands once, unconditionally')
+  assert.match(text, /const rowHalf = \(event\) => \{\n        const box = event\.currentTarget\.getBoundingClientRect\(\)\n        const y = event\.clientY/,
+    'rowHalf measures the live row box (official rowHalf port)')
+  assert.match(text, /return y < box\.top \+ box\.height \/ 2 \? 'before' : 'after'/,
+    'the midpoint split has no middle band')
+  assert.match(text, /const rowZone = \(event\) => \{\n        const box = event\.currentTarget\.getBoundingClientRect\(\)/,
+    'rowZone measures the same live box')
+  assert.match(text, /if \(zone === null\) return/,
+    'an outside-row frame answers null and leaves the current target alone')
 })
 
 test('v0.36.5: a level is ONE mixed sequence (bare workspaces interleave with group rows)', () => {
@@ -2692,10 +2979,28 @@ test('v0.36.5: a workspace row and a group row reorder into each other (mixed dr
     'the group reorder goes through the shared mixed write')
   // A workspace->workspace drop still edits the registry, but once the level
   // carries mixed tokens the registry alone no longer moves the row.
-  assert.match(text, /if \(tokens\.some\(\(token\) => token\.startsWith\('w:'\)\)\) \{/,
+  assert.match(text, /if \(!optimisticOrder && tokens\.some\(\(token\) => token\.startsWith\('w:'\)\)\) \{/,
     'a plain workspace reorder also refreshes the mixed list when the level has one')
   assert.match(text, /writeLevelOrder\(levelKey, 'w:' \+ source\.workspaceId, 'w:' \+ targetWorkspace\.workspaceId, half === 'after' \? 'after' : 'before'\)/,
     'the workspace reorder mirrors itself into the mixed list')
+  // v0.42.1 PERF: the token list is installed BEFORE the Host round trip.
+  // The Host's insertBefore rewrites the whole global registry state, so waiting
+  // for it made a workspace drop settle visibly later than a session drop (one
+  // record write). The optimistic write must precede the RPC in source order,
+  // keep the previous list for rollback, and be skipped by the late write.
+  const optimisticAt = text.indexOf('if (optimisticOrder && typeof actions.setFolderOrder === \'function\') actions.setFolderOrder(levelKey, optimisticOrder)')
+  const rpcAt = text.indexOf('insertWorkspaceBefore(source.workspaceId, anchor)')
+  assert.ok(optimisticAt > -1, 'the workspace drop installs the level order optimistically')
+  assert.ok(rpcAt > -1 && optimisticAt < rpcAt,
+    'the optimistic write happens before the Host reorder, not after it')
+  assert.match(text, /const nextLevelTokens = \(containerKey, sourceToken, targetToken, zone\) => \{/,
+    'the token math is factored out of the persist wrapper so it can run twice')
+  assert.match(text, /const tokens = nextLevelTokens\(containerKey, sourceToken, targetToken, zone\)\n        if \(!tokens\) return false/,
+    'writeLevelOrder persists the list nextLevelTokens computed')
+  assert.match(text, /const optimisticOrder = sameFolder && sameDisk && storedLevelOrder && storedLevelOrder\.length > 0/,
+    'only an in-level, same-disk drop on an already-token-ordered level installs early')
+  assert.match(text, /if \(optimisticOrder && typeof actions\.setFolderOrder === 'function'\) actions\.setFolderOrder\(levelKey, storedLevelOrder\)/,
+    'a refused Host write rolls the level order back')
 })
 
 
@@ -2916,10 +3221,14 @@ test('v0.36.10: level-mate groups nest, lift and survive a resting drag', () => 
     'the lift hover arms a folderLift carrying the row object')
   assert.match(text, /commitFolderLift\(drag\.source, workspace, over\.half\)/,
     'the lift drop commits')
-  // 4) The middle band of an open slot stays reachable (three bands re-judged
-  // in the content box) — nesting through the natural approach path works.
-  assert.match(text, /pointerInRowBox\(event\) \? rowZone\(event\) : rowHalf\(event\)/,
-    'the content box re-judges while the padding keeps the slot')
+  // 4) Nesting stays reachable: the folder hover reads the three bands from the
+  // live rect on every frame (the official rowHalf for reordering plus the
+  // middle band this plugin needs for INTO), so entering through an edge and
+  // settling in the middle flips to INTO with no slot memory to keep in sync.
+  assert.match(text, /const zone = rowZone\(event\)/,
+    'the folder hover re-reads the three bands every frame')
+  assert.doesNotMatch(text, /pointerInRowBox/,
+    'no padding band to fall back on (the marker is a pure overlay)')
   // 5) A resting drag still commits: dragEnd honors the armed {over} unless a
   // real drop ran or Escape cancelled.
   assert.equal((text.match(/const dragStateRef = React\.useRef\(null\)/g) || []).length, 1,
