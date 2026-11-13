@@ -819,7 +819,9 @@ window.__ModuleLoader__.load({
         let ownerPath
         let length = -1
         for (const root of idByPath.keys()) {
-          if (root.length > length && child !== root && child.startsWith(root + '/')) {
+          // v0.42.1: an empty path is not a root — '' + '/' would claim every
+          // POSIX absolute path as its child (review 2026-11-13).
+          if (root !== '' && root.length > length && child !== root && child.startsWith(root + '/')) {
             ownerPath = root
             length = root.length
           }
@@ -4538,10 +4540,13 @@ window.__ModuleLoader__.load({
           const summary = list.byId[id]
           if (accounted.has(id) || !sessionVisible(summary, currentId, archivedSet, archivedFilter)) continue
           const st = statusOf(id)
+          // One display-title resolution per row (review 2026-11-13): the same
+          // value feeds title, leaf and the grouping gate.
+          const display = rowTitleOf(id, summary, prefsMap.graftTitlePrefix !== false)
           ungrouped.push({
             id,
-            title: rowTitleOf(id, summary, prefsMap.graftTitlePrefix !== false),
-            leaf: rowTitleOf(id, summary, prefsMap.graftTitlePrefix !== false),
+            title: display,
+            leaf: display,
             blank: !!summary.blank,
             running: (st && st.running !== undefined ? st.running : summary.running) === true,
             completed: summary.completed === true || (st && st.completionUnread === true),
@@ -4550,7 +4555,7 @@ window.__ModuleLoader__.load({
             pending: visiblePendingKind(st && st.pendingInteraction && st.pendingInteraction.kind),
             pinned: pinnedSet.has(id) && !archivedSet.has(id),
             archived: archivedSet.has(id),
-            allowGroups: !flatMap[id] && groupsAllowedFor(summary, rowTitleOf(id, summary, prefsMap.graftTitlePrefix !== false)),
+            allowGroups: !flatMap[id] && groupsAllowedFor(summary, display),
           })
         }
         ungrouped.sort((a, b) => b.updatedAt - a.updatedAt)
@@ -4616,10 +4621,14 @@ window.__ModuleLoader__.load({
           const summary = list && list.byId ? list.byId[id] : undefined
           if (!sessionVisible(summary, currentId, archivedSet, filter)) continue
           const st = statusOf(id)
+          // One display-title resolution per row: rowTitleOf consults the title
+          // cache and the provenance projection, and resolving it three times
+          // per row on every snapshot tick was pure waste (review 2026-11-13).
+          const display = rowTitleOf(id, summary, prefsMap.graftTitlePrefix !== false)
           rows.push({
             id,
-            title: rowTitleOf(id, summary, prefsMap.graftTitlePrefix !== false),
-            leaf: rowTitleOf(id, summary, prefsMap.graftTitlePrefix !== false),
+            title: display,
+            leaf: display,
             blank: !!summary.blank,
             running: (st && st.running !== undefined ? st.running : summary.running) === true,
             completed: summary.completed === true || (st && st.completionUnread === true),
@@ -4628,7 +4637,7 @@ window.__ModuleLoader__.load({
             pending: visiblePendingKind(st && st.pendingInteraction && st.pendingInteraction.kind),
             pinned: pinnedSet.has(id) && !archivedSet.has(id),
             archived: archivedSet.has(id),
-            allowGroups: !flatMap[id] && groupsAllowedFor(summary, rowTitleOf(id, summary, prefsMap.graftTitlePrefix !== false)),
+            allowGroups: !flatMap[id] && groupsAllowedFor(summary, display),
           })
         }
         // Browser-local reorder fallback: used only when the injected
@@ -5230,8 +5239,10 @@ window.__ModuleLoader__.load({
       // insertSessionBefore (authoritative, visible to every surface); dragging
       // a session onto a sub-group row is a pure rename and stays available
       // without it. When the service lacks the action, reorder falls back to the
-      // browser-local flat order (sessionOrder).
-      const canReorderSessions = true
+      // browser-local flat order (sessionOrder) — so reorder is ALWAYS
+      // available. v0.42.1: the old `canReorderSessions` constant and its
+      // three guards were dead code that read like a capability probe
+      // (review 2026-11-13).
 
       /* --------------------- workspace drag & drop -------------------- */
 
@@ -6126,7 +6137,7 @@ window.__ModuleLoader__.load({
         },
         onDragEnd: () => setDrag(null),
         onDragOver: (event) => {
-          if (!dragMatches('session') || !canReorderSessions || drag.source.workspaceId !== workspaceId) return
+          if (!dragMatches('session') || drag.source.workspaceId !== workspaceId) return
           event.preventDefault()
           event.stopPropagation()
           try { event.dataTransfer.dropEffect = 'move' } catch { }
@@ -6136,7 +6147,7 @@ window.__ModuleLoader__.load({
             : (current ? { ...current, over: { kind: 'session', target: session.id, half } } : current))
         },
         onDrop: (event) => {
-          if (!dragMatches('session') || !canReorderSessions || drag.source.workspaceId !== workspaceId) return
+          if (!dragMatches('session') || drag.source.workspaceId !== workspaceId) return
           event.preventDefault()
           event.stopPropagation()
           const half = drag.over && drag.over.kind === 'session' && drag.over.target === session.id ? drag.over.half : rowHalf(event)
@@ -6163,7 +6174,6 @@ window.__ModuleLoader__.load({
       const commitSessionDrop = (workspaceId, targetSessionId, half) => {
         const source = drag.source
         setDrag(null)
-        if (!canReorderSessions) return
         if (source.sessionId === targetSessionId) return
         const workspace = (items || []).find(w => w.workspaceId === workspaceId)
         if (!workspace) return
@@ -7756,12 +7766,14 @@ window.__ModuleLoader__.load({
       // menu row, straight from the dsh 0.2.1 source (cordis 4.0.5): 'remote'
       // is a fiber service provided by the api-gateway bundle, and
       // 'remote.agentPresets' is a NAMESPACE service installed by api-remotes
-      // ($mount) on its own child fiber. `ctx.remote` resolves through the
-      // property chain only along the reading fiber's ancestry — v0.32.1
-      // probed it from a fiber outside that subtree, the chain threw, and the
-      // row hid; v0.32.0's strict ctx.get ran before the gateway went ACTIVE
-      // and read undefined. The fix keeps NO hard inject (the optional-service
-      // lesson: a service the host lacks would pend this bundle forever):
+      // ($mount) on its own child fiber. v0.32.0's strict ctx.get ran before
+      // the gateway went ACTIVE and read undefined; v0.32.1 then read the
+      // property chain from a fiber outside the provider subtree, which threw.
+      // v0.42.1 retires the property probe entirely: reading a possibly-absent
+      // service off the Context proxy raises a plugin-attributed stack every
+      // boot (invariant 9), and the soft inject below covers the late case
+      // anyway. NO hard inject either (the optional-service lesson: a service
+      // the host lacks would pend this bundle forever):
       // probe synchronously for the common case, then WAIT with a soft
       // ctx.inject child fiber that fires once the two services go ACTIVE —
       // or pends harmlessly forever on hosts without them. The face reaches
@@ -7806,16 +7818,12 @@ window.__ModuleLoader__.load({
       })
       try {
         let agentPresets = null
+        // Strict get only — never ctx.remote (invariant 9). It yields nothing
+        // while the provider pends; the soft inject below picks it up later.
         try {
-          const remote = ctx.remote
+          const remote = ctx.get('remote')
           agentPresets = remote && remote.agentPresets
-        } catch { /* the property chain needs the service on this fiber's path */ }
-        if (!presetFaceReady(agentPresets)) {
-          try {
-            const remote = ctx.get('remote')
-            agentPresets = remote && remote.agentPresets
-          } catch { /* strict get yields nothing while the provider pends */ }
-        }
+        } catch { /* strict get yields nothing while the provider pends */ }
         if (presetFaceReady(agentPresets)) presetFace = buildPresetFace(agentPresets)
       } catch (presetFaceError) {
         console.warn('[dsh-better-workspace] agent-preset face unavailable', presetFaceError)

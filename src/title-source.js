@@ -15,6 +15,13 @@
 export const TITLE_SOURCE_KEY = 'betterWorkspace/titleSource'
 
 /**
+ * Contexts that already carry the projection. `apply` runs once per fiber in
+ * practice, but a duplicate apply on the same context would otherwise
+ * re-register and surface a spurious conflict warning (review 2026-11-13).
+ */
+const registeredContexts = new WeakSet()
+
+/**
  * Build the projection definition. `z` is zod's namespace, injected so the
  * fold can be tested with a real schema without a top-level import.
  * @param z - zod namespace (v4).
@@ -46,6 +53,7 @@ export function titleSourceProjection(z) {
  * @returns whether the projection was registered.
  */
 export async function registerTitleSource(ctx, log = () => {}) {
+  if (ctx && typeof ctx === 'object' && registeredContexts.has(ctx)) return true
   let z
   try {
     ({ z } = await import('zod'))
@@ -56,6 +64,7 @@ export async function registerTitleSource(ctx, log = () => {}) {
   }
   try {
     await ctx.sessionProjections.register(titleSourceProjection(z))
+    if (ctx && typeof ctx === 'object') registeredContexts.add(ctx)
     return true
   } catch (error) {
     log('[dsh-better-workspace] title provenance projection was not registered; '

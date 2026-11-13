@@ -62,8 +62,16 @@
 - 通过侧栏或对话空态添加工作区后,树自动展开其祖先(名称分组 / 磁盘父工作区)并把该行 `scrollIntoView({ block: 'nearest' })`,不再落在视口外。搜索与单列表视图下清除待定位状态。
 - 新建工作区(侧栏 / 对话空态)与工作区行 `+` 新建会话后,除展开祖先分组,还会把**新会话行**滚进视口:reveal effect 用 `owner.sessionIds.indexOf(currentId)` 认出刚建的 blank 会话(它只有 current 时绘制),查 `[data-row-key="session:<id>"]` 并 `scrollIntoView({ block: 'nearest' })`;宿主还没发布成员时等 1.2s 再退回工作区行,8s 上限。
 
+### chore(评审第 2 批:一致性、死代码与一次解析)
+- **每行标题只解析一次**:两处会话行构建此前对同一行调用 3 次 `rowTitleOf`(title / leaf / 分组判据);快照每秒数十 tick × 数百行时这是白花开销。现在先算一次 `const display = rowTitleOf(id, summary, prefsMap.graftTitlePrefix !== false)`,三处共用。
+- **删掉恒真的 reorder 开关**:`const canReorderSessions = true` 与三处守卫(dragover / drop / `commitSessionDrop`)都是死条件;删除并在注释里写明「reorder 永远可用,宿主没有 `insertSessionBefore` 时由本地 `sessionOrder` 兜底」。
+- **空 path 不再被当成根**:`diskParentMapOf` 的递归前缀判定会把 `'' + '/'` 拼成 `'/'`,从而把**所有** POSIX 绝对路径认领为某个 path 为空的工作区的子级;改为跳过空 path(尚未拿到目录的工作区不可能是任何人的父级)。
+- **宿主探测只用 `ctx.get`**:agent-preset 面残留一处 `ctx.remote` 属性读,按不变量 9 改为 `ctx.get('remote')`——可选服务未注入时读 Context 代理属性,每次启动都会在 console 写一条插件归属的堆栈。
+- **投影注册幂等**:`registerTitleSource` 增加模块级 `WeakSet<ctx>` 门,重复 apply 不再二次注册(否则宿主报投影名冲突,第二个 fiber 拿不到来源投影)。
+- 冒烟新增一条把这些钉住:无恒真开关、无 `ctx.remote` 属性读、`display` 恰好解析 2 次、title-source 连调两次只真正注册一次、`HOST_CONFIG_FIELDS` 与 host 半 `Config` 键集合逐字一致。
+
 ### 验证
-- 冒烟 `node tests/smoke.mjs`(等价 `npm test`):95 项全绿,0 fail;守卫覆盖按节点配额与水位窗口(打开窗口内会话不重排、不多出一行)、水位数学(5→10→Infinity、额度 0)、折叠清理与「收起」行、缩进常量、自动色只染图标、slug 形状判据矩阵、graft 来源门控(含幽灵分组回归与 user 标题不 graft)、reveal 目标、flat 开关与 21 门键集对齐、工作区排序的乐观写(写在前、RPC 在后、失败回滚、迟到写入跳过)、每行独立渲染边界(占位行、resetKey 复位、函数式 fallback)、`dragstart` 统一复位取消标志。
+- 冒烟 `node tests/smoke.mjs`(等价 `npm test`):96 项全绿,0 fail;守卫覆盖按节点配额与水位窗口(打开窗口内会话不重排、不多出一行)、水位数学(5→10→Infinity、额度 0)、折叠清理与「收起」行、缩进常量、自动色只染图标、slug 形状判据矩阵、graft 来源门控(含幽灵分组回归与 user 标题不 graft)、reveal 目标、flat 开关与 21 门键集对齐、工作区排序的乐观写(写在前、RPC 在后、失败回滚、迟到写入跳过)、每行独立渲染边界(占位行、resetKey 复位、函数式 fallback)、`dragstart` 统一复位取消标志、空 path 不是根、投影注册幂等、`HOST_CONFIG_FIELDS` 与 host 半一致。
 - `node --check` 三个 client 文件与 `node --check tests/smoke.mjs`、`git diff --check` 通过。
 - 真机:行序与可见行数由用户实拍截图确认(同一节点 5↔6 行、行 3↔1 位);本会话宿主 127.0.0.1:32742 不能重启(早期报过 `ERR_CACHE_READ_FAILURE` 白屏),其余行为以静态守卫 + 纯函数断言 + 真实缓存抽样为准,待用户重启复验。
 

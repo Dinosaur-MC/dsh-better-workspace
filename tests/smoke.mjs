@@ -291,8 +291,10 @@ test('v0.39.2: host title provenance, not title text, decides grouping (issue #1
   assert.match(text, /const GROUP_HEAD_RE = \/\^\[A-Za-z0-9\]\[A-Za-z0-9\._@\+#-\]\{0,31\}\$\//)
   // Both row families (ungrouped and inside a workspace) carry the decision,
   // and both feed it the DISPLAYED title (a grafted user prefix groups too).
-  assert.equal((text.match(/allowGroups: !flatMap\[id\] && groupsAllowedFor\(summary, rowTitleOf\(/g) || []).length, 2,
+  assert.equal((text.match(/allowGroups: !flatMap\[id\] && groupsAllowedFor\(summary, display\),/g) || []).length, 2,
     'ungrouped and workspace session rows both carry provenance, gated by the per-session flat flag')
+  assert.equal((text.match(/const display = rowTitleOf\(/g) || []).length, 2,
+    'each row family resolves the display title exactly once')
   assert.match(text, /splitTitleSegs\(row\.title, row\.allowGroups !== false\)/)
   assert.match(text, /if \(session\.allowGroups === false\) continue/,
     'opaque titles are not offered as group suggestions')
@@ -562,8 +564,11 @@ test('title cache: persisted key, batch learning, debounced save, bounded evicti
   // the wire title stays group-less; the fallback stays sessionTitleOf.
   assert.match(text, /const rowTitleOf = \(id, summary, graftedOn\) => \{/)
   assert.match(text, /return sessionTitleOf\(summary, t, rememberedTitleOf\(id\)\)/)
-  assert.match(text, /title: rowTitleOf\(id, summary, prefsMap\.graftTitlePrefix !== false\)/)
-  assert.match(text, /leaf: rowTitleOf\(id, summary, prefsMap\.graftTitlePrefix !== false\)/)
+  // v0.42.1: one display-title resolution per row feeds title, leaf and the
+  // grouping gate (resolving it three times per row per snapshot was waste).
+  assert.match(text, /const display = rowTitleOf\(id, summary, prefsMap\.graftTitlePrefix !== false\)/)
+  assert.match(text, /title: display,/)
+  assert.match(text, /leaf: display,/)
   assert.match(text, /rowTitleOf\(dialog\.sessionId, summary, prefsMap\.graftTitlePrefix !== false\)/)
   // v0.42.1: only a prefix learned from a user-authored title may be grafted,
   // and a user rename on the wire always stands verbatim.
@@ -1003,6 +1008,14 @@ test('buildTree: disk nesting + name groups inside each level (0.12.0)', () => {
   assert.equal(parents.get('b'), 'a')
   assert.equal(parents.get('d'), 'b')
   assert.equal(parents.get('top'), undefined)
+  // An empty path is not a directory root: '' + '/' would otherwise claim every
+  // POSIX absolute path as its child (review 2026-11-13).
+  const emptyRoot = diskParentMapOf([
+    { workspaceId: 'blank', title: 'blank', path: '' },
+    { workspaceId: 'abs', title: 'abs', path: '/home/u/app' },
+  ])
+  assert.equal(emptyRoot.get('abs'), undefined)
+  assert.equal(emptyRoot.get('blank'), undefined)
 
   const tree = buildTree(items)
   // Root level: one name group (web) holding a and c; the standalone row.
@@ -3432,4 +3445,40 @@ test('session age filter hides old rows without archiving them', () => {
   assert.match(text, /if \(Array\.isArray\(workspace\.sessionIds\) && visibleSessionsOf\(workspace\)\.length > 0\) return true/)
   assert.match(text, /t\('settings\.sessionAge'\)/)
   assert.match(text, /setPref\('sessionAgeDays', value\)/)
+})
+
+/**
+ * Review batch 2 (2026-11-13): a dead capability flag, a Context-proxy service
+ * probe, repeated title resolution and a projection registration that was not
+ * idempotent. Each assertion names the defect, not just today's shape.
+ */
+test('review batch 2: no dead reorder flag, no proxy probe, one title read per row', async () => {
+  const text = clientText()
+  // A constant `true` with three guards reads like a capability probe.
+  assert.doesNotMatch(text, /const canReorderSessions/)
+  assert.doesNotMatch(text, /!canReorderSessions/)
+  // Reading a possibly-absent service off the Context proxy raises a
+  // plugin-attributed stack every boot (invariant 9); only ctx.get is allowed.
+  assert.doesNotMatch(text, /const remote = ctx\.remote/)
+  assert.match(text, /const remote = ctx\.get\('remote'\)/)
+  // One display-title resolution feeds title, leaf and the grouping gate.
+  assert.equal((text.match(/const display = rowTitleOf\(/g) || []).length, 2)
+  assert.equal((text.match(/allowGroups: !flatMap\[id\] && groupsAllowedFor\(summary, display\),/g) || []).length, 2)
+  // A duplicated apply must not register the projection twice.
+  const source = readFileSync(new URL('../src/title-source.js', import.meta.url), 'utf8')
+  assert.match(source, /const registeredContexts = new WeakSet\(\)/)
+  assert.match(source, /registeredContexts\.has\(ctx\)\) return true/)
+  assert.match(source, /registeredContexts\.add\(ctx\)/)
+  const { registerTitleSource } = await import('../src/title-source.js')
+  let registrations = 0
+  const ctx = { sessionProjections: { register: async () => { registrations += 1 } } }
+  assert.equal(await registerTitleSource(ctx, () => {}), true, 'first registration succeeds')
+  assert.equal(await registerTitleSource(ctx, () => {}), true, 'a second apply reports the same state')
+  assert.equal(registrations, 1, 'the projection is registered exactly once')
+  // Host Config keys and the client write allow-list must not drift apart.
+  const host = readFileSync(new URL('../src/index.js', import.meta.url), 'utf8')
+  const hostKeys = [...host.matchAll(/^\s{4}(\w+): Schema\./gm)].map((match) => match[1]).sort()
+  const clientSet = text.match(/const HOST_CONFIG_FIELDS = new Set\(\[([^\]]+)\]\)/)[1]
+  const clientKeys = [...clientSet.matchAll(/'([^']+)'/g)].map((match) => match[1]).sort()
+  assert.deepEqual(clientKeys, hostKeys, 'HOST_CONFIG_FIELDS mirrors src/index.js Config')
 })
