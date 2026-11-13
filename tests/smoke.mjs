@@ -408,7 +408,10 @@ test('host half imports cleanly, registers title provenance, and survives a miss
   const plugin = await import('../src/index.js')
   assert.equal(plugin.name, 'dsh-better-workspace')
   assert.equal(typeof plugin.apply, 'function')
-  assert.deepEqual(plugin.inject, ['sessionProjections'])
+  // OPTIONAL, not hard: a required inject would make the "service absent"
+  // fallback below unreachable (review 2026-11-13).
+  assert.deepEqual(plugin.inject, { optional: ['sessionProjections'] })
+  assert.doesNotMatch(JSON.stringify(plugin.inject), /required/)
   let logged = ''
   const registered = []
   const ctx = {
@@ -424,6 +427,16 @@ test('host half imports cleanly, registers title provenance, and survives a miss
   // the client keeps its text fallback.
   await plugin.apply({ logger: { info: (m) => { logged = String(m) } } })
   assert.match(logged, /title provenance unavailable/)
+  // Optional injection means the Context proxy may not expose the service at
+  // all: the lookup has to go through ctx.get and degrade, not throw.
+  const seen = []
+  const probeSafe = {
+    logger: { info: (m) => { logged = String(m); seen.push(String(m)) } },
+    get: () => undefined,
+  }
+  assert.equal(await plugin.apply(probeSafe), undefined)
+  assert.ok(seen.some((m) => /sessionProjections is absent/.test(m)),
+    'the optional-service branch must be reachable (a hard inject would unreachable it)')
   await plugin.apply(undefined) // must not throw without a ctx/logger
 })
 
@@ -439,6 +452,24 @@ test('host half keeps its schemastery peer import lazy (0.21.1)', () => {
   assert.doesNotMatch(text, /^import\s+\w+\s+from\s+'@deepseek-ai\/schemastery'/m, 'no static schemastery import may come back')
   assert.match(text, /await import\('@deepseek-ai\/schemastery'\)/, 'the module is resolved lazily')
   assert.match(text, /export const Config = Schema === null/, 'Config degrades to absent instead of throwing')
+})
+
+/**
+ * The publish workflow only runs after a Release is published, so nothing
+ * tested the tree before a tag. This gate must run on every push / PR.
+ * The repo commits no lockfile (no runtime deps, two dev peers), so npm ci
+ * is impossible here — the gate installs with --no-package-lock on purpose.
+ */
+test('ci gate runs the smoke suite on push and pull requests', () => {
+  const yml = read('.github/workflows/ci.yml')
+  assert.match(yml, /^name: CI$/m)
+  assert.match(yml, /push:/, 'pushes are covered')
+  assert.match(yml, /branches: \[main\]/, 'the gate runs on main')
+  assert.match(yml, /pull_request:/, 'pull requests are covered')
+  assert.match(yml, /node-version: 24/, 'the CI node matches engines.node')
+  assert.match(yml, /npm install --no-package-lock --no-audit --no-fund/, 'installs without a lockfile')
+  assert.match(yml, /run: npm test/, 'runs the smoke suite')
+  assert.doesNotMatch(yml, /run: npm ci/, 'npm ci cannot work without a lockfile')
 })
 
 test('locale dictionaries cover every static t() key in both languages', () => {
@@ -1865,8 +1896,10 @@ test('declared groups: they render even with no members to project from (v0.17.0
   // ("workspaces" + a name layer = 'slash'), picker keeps its own variable.
   assert.match(text, /const treeMode = groupBy === 'workspace' && workspaceGroupMode !== 'disk'\n          \? 'slash'\n          : workspaceGroupMode\n        const built = buildTree\(items, treeMode, wsFolders, folderOrderMap\)/,
     'the main tree passes the workspace bag and the persisted group order')
-  assert.equal((text.match(/buildSessionTree\([^\n]*?(?:sessionsOf|visibleSessionsOf)\(workspace\)/g) || []).length, 4,
-    'every session-tree caller passes the session bag and its workspace scope')
+  // v0.42.1: every caller now goes through the per-render cache, so the bag
+  // and the workspace scope are threaded in ONE place (review batch 3).
+  assert.match(text, /const built = buildSessionTree\(visibleSessionsOf\(workspace\), sessionSlash, sessFolders, id\)/,
+    'the session bag and its workspace scope are threaded through the cache builder')
 })
 
 /**
@@ -2559,7 +2592,7 @@ test('rc.1: shipped seat occupants receive the global useSessionAccess hook', ()
   // degraded the whole region to empty. The seat kit carries every global
   // standard hook, so the reproduction must too — this is a SUPERSET check,
   // never narrowed back to the one hook an occupant happens to touch.
-  assert.match(text, /const seatStandardProps = \{\n        useSessionAccess,\n        useSessions,\n        useWorkspaces,/,
+  assert.match(text, /const seatStandardProps = React\.useMemo\(\(\) => \(\{\n        useSessionAccess,\n        useSessions,\n        useWorkspaces,/,
     'the seat kit hands down every global standard hook the row seats call')
   assert.match(text, /typeof useSessionStatus === 'function' \? \{ useSessionStatus \} : null/,
     'the optional status hook is handed down only when the host provides it')
@@ -3441,7 +3474,7 @@ test('session age filter hides old rows without archiving them', () => {
   assert.match(text, /const sessionAgeDays = Number\.isFinite\(rawAgeDays\)/)
   assert.match(text, /const visibleSessionsOf = \(workspace\) => filterSessionsByAge\(sessionsOf\(workspace\), sessionAgeDays, currentId, searching\)/)
   assert.match(text, /const full = visibleSessionsOf\(workspace\)/)
-  assert.match(text, /const count = countSessionTree\(buildSessionTree\(visibleSessionsOf\(workspace\)/)
+  assert.match(text, /const count = countSessionTree\(sessionTreeOf\(workspace\)\)/)
   assert.match(text, /if \(Array\.isArray\(workspace\.sessionIds\) && visibleSessionsOf\(workspace\)\.length > 0\) return true/)
   assert.match(text, /t\('settings\.sessionAge'\)/)
   assert.match(text, /setPref\('sessionAgeDays', value\)/)
@@ -3481,4 +3514,31 @@ test('review batch 2: no dead reorder flag, no proxy probe, one title read per r
   const clientSet = text.match(/const HOST_CONFIG_FIELDS = new Set\(\[([^\]]+)\]\)/)[1]
   const clientKeys = [...clientSet.matchAll(/'([^']+)'/g)].map((match) => match[1]).sort()
   assert.deepEqual(clientKeys, hostKeys, 'HOST_CONFIG_FIELDS mirrors src/index.js Config')
+})
+
+test('review batch 3: one session tree per workspace per render, stable seat hooks', () => {
+  const text = clientText()
+  // PERF: the count badge, the rendered rows, the collapsed-pulse relay, the
+  // search walk and the group dialog all read the SAME session tree per
+  // render. A ticking session snapshot used to rebuild it 2-4 times per
+  // workspace per frame.
+  assert.match(text, /const sessionTreeCache = new Map\(\)/)
+  assert.match(text, /const sessionTreeOf = \(workspace\) => \{/)
+  assert.match(text, /sessionTreeCache\.get\(id\)/)
+  assert.match(text, /sessionTreeCache\.set\(id, built\)/)
+  assert.equal((text.match(/buildSessionTree\(/g) || []).length, 2,
+    'buildSessionTree is reached through the cache only')
+  assert.doesNotMatch(text, /buildSessionTree\(sessionsOf\(/)
+  assert.match(text, /nodePulseOf\(sessionTreeOf\(workspace\)\)/)
+  assert.match(text, /countSessionTree\(sessionTreeOf\(workspace\)\)/)
+  assert.match(text, /renderSessionNode\(sessionTreeOf\(workspace\), workspace\.workspaceId, depth\)/)
+  assert.match(text, /findSessionGroup\(sessionTreeOf\(workspace\), target\.path\)/)
+  // SEAT HOOK IDENTITY: a shipped seat occupant is re-rendered by us on every
+  // snapshot tick; a fresh useXxx identity per bind made its memo/effect deps
+  // churn. One hook per observable, plus a memoized standard kit.
+  assert.match(text, /const selectorHookCache = new WeakMap\(\)/)
+  assert.match(text, /const cached = selectorHookCache\.get\(observable\)\n\s*if \(cached\) return cached/)
+  assert.match(text, /selectorHookCache\.set\(observable, hook\)/)
+  assert.match(text, /const seatStandardProps = React\.useMemo\(\(\) => \(\{/)
+  assert.match(text, /\}\), \[useSessionAccess, useSessions, useWorkspaces, useSessionStatus\]\)/)
 })

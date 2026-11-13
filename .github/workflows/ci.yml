@@ -1,0 +1,27 @@
+name: CI
+
+# The publish workflow only fires on a published Release; nothing tested the
+# tree before a tag was cut. This gate runs the smoke suite on every push and
+# pull request.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      # No lockfile is committed (the package has no runtime dependencies and
+      # two dev peers), so `npm ci` cannot run here by design.
+      - name: Install dev dependencies
+        run: npm install --no-package-lock --no-audit --no-fund
+      - name: Smoke suite
+        run: npm test

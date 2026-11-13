@@ -70,8 +70,18 @@
 - **投影注册幂等**:`registerTitleSource` 增加模块级 `WeakSet<ctx>` 门,重复 apply 不再二次注册(否则宿主报投影名冲突,第二个 fiber 拿不到来源投影)。
 - 冒烟新增一条把这些钉住:无恒真开关、无 `ctx.remote` 属性读、`display` 恰好解析 2 次、title-source 连调两次只真正注册一次、`HOST_CONFIG_FIELDS` 与 host 半 `Config` 键集合逐字一致。
 
+### perf(评审第 3 批:每帧一次建树、座位钩子身份稳定)
+- **每个工作区每渲染只建一次会话树**:计数角标、行本身、折叠态呼吸中继、搜索走查与新分组对话框都向同一棵会话树提问,宿主会话快照每秒数十 tick 时这棵树此前会被重建 2-4 次/工作区/帧。现在组件体内一个 `sessionTreeCache: Map`(生命周期 = 一次渲染,下次渲染自然丢弃,不存在需要维护的失效键)与 `sessionTreeOf(workspace)` 统一供给;`buildSessionTree` 全仓只剩「定义 + 缓存内一处调用」。缓存读的是年龄过滤后的列表,与行、角标显示的集合一致——被隐藏的会话不再呼吸、不被计数、也不是拖拽目标。
+- **座位钩子身份稳定**:`ShippedSeatOccupant` 每次父级重渲染都会重跑 `bindOccupantFace`,而官方 `entry.inject()` 可能每次返回新的 face 对象,于是每个 `useXxx` 函数每次都是新引用,占用者的 memo / effect 依赖跟着抖动。现在按 observable 做 `WeakMap` 缓存(observable 才是稳定身份),一个 observable 终身一个 hook。`seatStandardProps` 同时用 `React.useMemo` 固定对象身份,并移到「宿主缺标准钩子」的降级返回之前——hook 顺序不再取决于宿主给了什么。
+- 冒烟新增一条:缓存的存在与两处调用形状、`buildSessionTree` 恰好 2 处、五个消费点都走 `sessionTreeOf`、selector hook 缓存与 `seatStandardProps` 的 memo 形状。
+
+### chore(评审收尾:CI 测试门禁、README 与可选注入)
+- **CI 门禁**:新增 `.github/workflows/ci.yml`,每次 push 到 main 与每个 PR 都跑冒烟(Node 24)。仓库不提交 lockfile(无运行时依赖、两个 dev peer),`npm ci` 不可用,因此用 `npm install --no-package-lock --no-audit --no-fund`;发布工作流不变,仍只在 Release published 后触发 npm 发布。
+- **README 补 v0.42.1**:「其余亮点」新增五条——配额按节点独立与逐次展开、行样式贴近官方(缩进 / 动作区 / 自动色只染图标)、自动标题更可靠与逐会话「不按 / 分组」开关、新建即定位、渲染安全网与 CI;不再停留在 v0.42.0 的功能面。
+- **host 半注入改为可选**:`src/index.js` 的 `inject` 由硬数组改为 `{ optional: ['sessionProjections'] }`;`registerTitleSource` 读服务改走 `ctx.get('sessionProjections')`(只有测试用的普通对象 ctx 才退回属性读取),服务缺席时显式返回 false。此前硬注入会让「服务缺席、退回显示层兜底」分支不可达,与冒烟里的降级断言自相矛盾;现在两条路径都可达。
+- 冒烟新增 CI 门禁断言(触发面、Node 24、无 lockfile 的安装方式、不跑 `npm ci`);host 半测试补可选服务缺席路径与 `inject` 形状。
 ### 验证
-- 冒烟 `node tests/smoke.mjs`(等价 `npm test`):96 项全绿,0 fail;守卫覆盖按节点配额与水位窗口(打开窗口内会话不重排、不多出一行)、水位数学(5→10→Infinity、额度 0)、折叠清理与「收起」行、缩进常量、自动色只染图标、slug 形状判据矩阵、graft 来源门控(含幽灵分组回归与 user 标题不 graft)、reveal 目标、flat 开关与 21 门键集对齐、工作区排序的乐观写(写在前、RPC 在后、失败回滚、迟到写入跳过)、每行独立渲染边界(占位行、resetKey 复位、函数式 fallback)、`dragstart` 统一复位取消标志、空 path 不是根、投影注册幂等、`HOST_CONFIG_FIELDS` 与 host 半一致。
+- 冒烟 `node tests/smoke.mjs`(等价 `npm test`):98 项全绿,0 fail;守卫覆盖按节点配额与水位窗口(打开窗口内会话不重排、不多出一行)、水位数学(5→10→Infinity、额度 0)、折叠清理与「收起」行、缩进常量、自动色只染图标、slug 形状判据矩阵、graft 来源门控(含幽灵分组回归与 user 标题不 graft)、reveal 目标、flat 开关与 21 门键集对齐、工作区排序的乐观写(写在前、RPC 在后、失败回滚、迟到写入跳过)、每行独立渲染边界(占位行、resetKey 复位、函数式 fallback)、`dragstart` 统一复位取消标志、空 path 不是根、投影注册幂等、`HOST_CONFIG_FIELDS` 与 host 半一致、CI 工作流的触发面与安装方式、host 半可选注入的缺席路径。
 - `node --check` 三个 client 文件与 `node --check tests/smoke.mjs`、`git diff --check` 通过。
 - 真机:行序与可见行数由用户实拍截图确认(同一节点 5↔6 行、行 3↔1 位);本会话宿主 127.0.0.1:32742 不能重启(早期报过 `ERR_CACHE_READ_FAILURE` 白屏),其余行为以静态守卫 + 纯函数断言 + 真实缓存抽样为准,待用户重启复验。
 

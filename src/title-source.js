@@ -62,8 +62,18 @@ export async function registerTitleSource(ctx, log = () => {}) {
       + (error && error.message || String(error)))
     return false
   }
+  // Probe-safe service lookup: an optional inject never guarantees the
+  // property exists on the Context proxy (reading it would throw), while a
+  // plain test context has no `get`. Use `get` when the context provides it.
+  const service = ctx && typeof ctx.get === 'function'
+    ? ctx.get('sessionProjections')
+    : (ctx && ctx.sessionProjections)
+  if (!service || typeof service.register !== 'function') {
+    log('[dsh-better-workspace] sessionProjections is absent; session title provenance falls back to display heuristics')
+    return false
+  }
   try {
-    await ctx.sessionProjections.register(titleSourceProjection(z))
+    await service.register(titleSourceProjection(z))
     if (ctx && typeof ctx === 'object') registeredContexts.add(ctx)
     return true
   } catch (error) {

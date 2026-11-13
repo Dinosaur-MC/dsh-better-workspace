@@ -601,10 +601,20 @@ window.__ModuleLoader__.load({
       return React.useSyncExternalStore(subscribe, getSnapshot)
     }
 
+    // One hook function per observable, for the observable's whole lifetime.
+    // `bindOccupantFace` re-runs whenever a hosting row re-renders (the session
+    // snapshot ticks several times a second), and official `entry.inject()`
+    // may hand back a NEW face object each call — building a fresh `useXxx`
+    // identity every time made every occupant's memo/effect deps change on our
+    // re-render. The observable is the stable identity; the hook wraps nothing
+    // but that observable.
+    const selectorHookCache = new WeakMap()
     const bindSelectorHook = (observable) => {
+      const cached = selectorHookCache.get(observable)
+      if (cached) return cached
       const subscribe = (notify) => observable.subscribe(notify)
       const getSnapshot = () => observable.getSnapshot()
-      return function useSelector(selector, isEqual) {
+      const hook = function useSelector(selector, isEqual) {
         const selectorRef = React.useRef(selector)
         selectorRef.current = selector
         const isEqualRef = React.useRef(isEqual)
@@ -621,6 +631,8 @@ window.__ModuleLoader__.load({
         }, [])
         return React.useSyncExternalStore(subscribe, getSelection)
       }
+      selectorHookCache.set(observable, hook)
+      return hook
     }
 
     /** Split an inject face into plain props + `use<Name>` selector hooks. */
@@ -3922,10 +3934,6 @@ window.__ModuleLoader__.load({
       // extras into the apply-level contribution.
       const activeContextMenu = useActiveContextMenu(contextMenuFaceOf)
 
-      if (typeof useWorkspaces !== 'function' || typeof useSessions !== 'function') {
-        console.error('[dsh-better-workspace] standard snapshot hooks missing; browser renders nothing')
-        return null
-      }
       // The slot renderer synthesizes a STANDARD KIT into every occupant
       // (dsh-client-ui-renderer: materializeStandardBinding over the shell's
       // standard sources — 'sessions' becomes useSessions, 'workspaces'
@@ -3936,11 +3944,20 @@ window.__ModuleLoader__.load({
       // and threw "useSessions is not a function" when only
       // useSessionAccess was passed (whole region degraded to empty).
       // Never narrow this object to the one hook a given occupant touches.
-      const seatStandardProps = {
+      // Memoized so the object identity only moves when the hooks themselves
+      // do: a fresh literal every render re-rendered every seat occupant for
+      // free on each session-snapshot tick. Declared before the degraded-mode
+      // return so the hook order never depends on the host's kit.
+      const seatStandardProps = React.useMemo(() => ({
         useSessionAccess,
         useSessions,
         useWorkspaces,
         ...(typeof useSessionStatus === 'function' ? { useSessionStatus } : null),
+      }), [useSessionAccess, useSessions, useWorkspaces, useSessionStatus])
+
+      if (typeof useWorkspaces !== 'function' || typeof useSessions !== 'function') {
+        console.error('[dsh-better-workspace] standard snapshot hooks missing; browser renders nothing')
+        return null
       }
 
       const storedItems = useWorkspaces(s => s.items)
@@ -4693,6 +4710,25 @@ window.__ModuleLoader__.load({
       // Age-filtered view of a workspace: the single source shared by the row
       // list, its count badge and the "only archived" visibility test.
       const visibleSessionsOf = (workspace) => filterSessionsByAge(sessionsOf(workspace), sessionAgeDays, currentId, searching)
+      // v0.42.1 PERF — one session tree per workspace per render. The count
+      // badge, the rows themselves, the collapsed-pulse relay and the
+      // search/new-group walks all ask for the SAME tree; on a ticking session
+      // snapshot (running status refreshes several times a second) they used to
+      // rebuild it two to four times per workspace per frame. The Map lives
+      // exactly one render — a fresh one is created in the body — so any store
+      // change that re-renders the browser discards it: there is no
+      // invalidation key to keep in sync. Everything reads the age-filtered
+      // list, which is also what the rows and the badge display (a hidden row
+      // must not breathe, be counted, or be a drag target).
+      const sessionTreeCache = new Map()
+      const sessionTreeOf = (workspace) => {
+        const id = workspace.workspaceId
+        const hit = sessionTreeCache.get(id)
+        if (hit) return hit
+        const built = buildSessionTree(visibleSessionsOf(workspace), sessionSlash, sessFolders, id)
+        sessionTreeCache.set(id, built)
+        return built
+      }
 
       /* --------------------- status breathing relay -------------------- */
 
@@ -4713,7 +4749,7 @@ window.__ModuleLoader__.load({
       // tree AND its disk-nested child levels.
       const wsAllPulseOf = (workspace) => {
         if (!statusPulse || searching) return null
-        let best = nodePulseOf(buildSessionTree(sessionsOf(workspace), sessionSlash, sessFolders, workspace.workspaceId))
+        let best = nodePulseOf(sessionTreeOf(workspace))
         if (workspace.sub) {
           for (const folder of workspace.sub.folders) {
             const s = folderPulseOf(folder)
@@ -5046,7 +5082,7 @@ window.__ModuleLoader__.load({
             out.push({ id: f.scope + '|' + f.path, scope: '', path: '', label: folderLabelOf(f), kind: 'folder', pickable: false, children: sessNodesOf(f) })
           }
           for (const w of node.workspaces || []) {
-            const inner = sessGroupNodesOf(buildSessionTree(sessionsOf(w), sessionSlash, sessFolders, w.workspaceId), w.workspaceId)
+            const inner = sessGroupNodesOf(sessionTreeOf(w), w.workspaceId)
             const subNodes = w.sub ? sessNodesOf(w.sub) : []
             out.push({
               id: w.workspaceId + '|', scope: w.workspaceId, path: '', label: w.leaf || w.title, kind: 'ws',
@@ -5060,7 +5096,7 @@ window.__ModuleLoader__.load({
         // sidebar draws it (raw items — there is no .sub level to nest here).
         const flat = []
         for (const w of items) {
-          const inner = sessGroupNodesOf(buildSessionTree(sessionsOf(w), sessionSlash, sessFolders, w.workspaceId), w.workspaceId)
+          const inner = sessGroupNodesOf(sessionTreeOf(w), w.workspaceId)
           flat.push({ id: w.workspaceId + '|', scope: w.workspaceId, path: '', label: w.leaf || w.title, kind: 'ws', children: inner })
         }
         return { hint: t('group.new.pickWorkspace'), nodes: flat }
@@ -5146,7 +5182,7 @@ window.__ModuleLoader__.load({
         if (target.kind === 'sgroup') {
           const workspace = (items || []).find((w) => w.workspaceId === target.workspaceId)
           if (!workspace) { setDialog(null); return }
-          const node = findSessionGroup(buildSessionTree(sessionsOf(workspace), sessionSlash, sessFolders, workspace.workspaceId), target.path)
+          const node = findSessionGroup(sessionTreeOf(workspace), target.path)
           if (!node) { setDialog(null); return }
           const affected = collectSessionRows(node)
           Promise.resolve()
@@ -6328,7 +6364,7 @@ window.__ModuleLoader__.load({
         if (name === target.name) { setDialog(null); return }
         const workspace = (items || []).find(w => w.workspaceId === target.workspaceId)
         if (!workspace) { setDialog(null); return }
-        const node = findSessionGroup(buildSessionTree(sessionsOf(workspace), sessionSlash, sessFolders, workspace.workspaceId), target.path)
+        const node = findSessionGroup(sessionTreeOf(workspace), target.path)
         if (!node) { setDialog(null); return }
         const parentPath = target.path.includes('/') ? target.path.slice(0, target.path.lastIndexOf('/')) : ''
         const nextPath = parentPath !== '' ? parentPath + '/' + name : name
@@ -6430,7 +6466,7 @@ window.__ModuleLoader__.load({
         // --dsh-workspace-indent for both). Only nested session groups step
         // in; the old depth+1 made every direct session look like a child of
         // its own workspace row.
-        return renderSessionNode(buildSessionTree(full, sessionSlash, sessFolders, workspace.workspaceId), workspace.workspaceId, depth)
+        return renderSessionNode(sessionTreeOf(workspace), workspace.workspaceId, depth)
       }
       const searchSessionNode = (node) => {
         const groups = []
@@ -6587,7 +6623,7 @@ window.__ModuleLoader__.load({
       const renderWorkspaceEntry = (entry, depth, pulse) => {
         const { workspace } = entry
         if (!workspaceVisible(workspace)) return []
-        const count = countSessionTree(buildSessionTree(visibleSessionsOf(workspace), sessionSlash, sessFolders, workspace.workspaceId))
+        const count = countSessionTree(sessionTreeOf(workspace))
         const rows = [E(WorkspaceRow, {
           key: 'ws-' + workspace.workspaceId,
           workspace,

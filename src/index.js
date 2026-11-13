@@ -50,7 +50,15 @@ export const Config = Schema === null
     appearance: Schema.dict(Schema.any()).default({}).volatile(),
   })
 
-export const inject = ['sessionProjections']
+/**
+ * OPTIONAL, not required. A hard `inject: ['sessionProjections']` keeps the
+ * fiber inactive until the service is there, which contradicts the best-effort
+ * contract of `registerTitleSource` (its "service absent, keep the display
+ * fallback" branch would be unreachable — review 2026-11-13). Optional
+ * injection activates the row immediately and re-runs `apply` only when the
+ * service actually appears.
+ */
+export const inject = { optional: ['sessionProjections'] }
 
 export async function apply(ctx) {
   const log = ctx && ctx.logger && typeof ctx.logger.info === 'function'
