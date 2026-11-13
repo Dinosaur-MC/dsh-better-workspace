@@ -1468,7 +1468,9 @@ window.__ModuleLoader__.load({
           // Only then may a later automatic leaf rename keep the prefix.
           entry.keepPrefix = source === 'user'
             || (source === undefined && deliberateGroupPrefix(title))
-        } else if (grafted !== undefined && prev && prev.keepPrefix === true) {
+        } else if (source !== 'user' && grafted !== undefined && prev && prev.keepPrefix === true) {
+          // v0.42.1: a USER title is authoritative. Rewriting it with a stale
+          // prefix would also resurrect a group the user just flattened.
           entry.keepPrefix = true
           entry.display = grafted
         }
@@ -2061,16 +2063,27 @@ window.__ModuleLoader__.load({
     class QuietBoundary extends React.Component {
       constructor(props) {
         super(props)
-        this.state = { failed: false }
+        this.state = { failed: false, error: null, resetKey: props.resetKey }
       }
-      static getDerivedStateFromError() {
-        return { failed: true }
+      static getDerivedStateFromError(error) {
+        return { failed: true, error }
+      }
+      // v0.42.1: a boundary that can never clear is a permanent hole. Callers
+      // pass a resetKey that tracks the DATA the boundary wraps, so a row that
+      // recovers on the next snapshot comes back without a reload.
+      static getDerivedStateFromProps(props, state) {
+        if (props.resetKey === state.resetKey) return null
+        return { failed: false, error: null, resetKey: props.resetKey }
       }
       componentDidCatch(error, info) {
-        console.error('[dsh-better-workspace] render error (region degraded to empty)', error, info)
+        console.error('[dsh-better-workspace] render error'
+          + (this.props.label ? ' (' + this.props.label + ')' : ' (region degraded to empty)'), error, info)
       }
       render() {
-        return this.state.failed ? null : this.props.children
+        if (!this.state.failed) return this.props.children
+        const fallback = this.props.fallback
+        if (typeof fallback === 'function') return fallback(this.state.error)
+        return fallback === undefined ? null : fallback
       }
     }
 
@@ -3911,10 +3924,22 @@ window.__ModuleLoader__.load({
         console.error('[dsh-better-workspace] standard snapshot hooks missing; browser renders nothing')
         return null
       }
-      // useSessionAccess is a GLOBAL standard hook on rc.1. Shipped seat
-      // occupants (row.action pin/archive) call it directly, so
-      // an in-row reproduction hands it down exactly like the slot renderer.
-      const seatStandardProps = { useSessionAccess }
+      // The slot renderer synthesizes a STANDARD KIT into every occupant
+      // (dsh-client-ui-renderer: materializeStandardBinding over the shell's
+      // standard sources — 'sessions' becomes useSessions, 'workspaces'
+      // useWorkspaces, 'sessionAccess' useSessionAccess, …). An in-row
+      // reproduction has to hand the same hooks down: the shipped row seats
+      // call them directly. v0.42.1 boot log proof — the experimental forge
+      // occupant (sidebar.session.row.trailing) calls useSessions(s => …)
+      // and threw "useSessions is not a function" when only
+      // useSessionAccess was passed (whole region degraded to empty).
+      // Never narrow this object to the one hook a given occupant touches.
+      const seatStandardProps = {
+        useSessionAccess,
+        useSessions,
+        useWorkspaces,
+        ...(typeof useSessionStatus === 'function' ? { useSessionStatus } : null),
+      }
 
       const storedItems = useWorkspaces(s => s.items)
       // Official rc.2 first-use naming (see withDisplayTitles): every surface
@@ -4348,8 +4373,17 @@ window.__ModuleLoader__.load({
       React.useEffect(() => { dragStateRef.current = drag }, [drag])
       React.useEffect(() => {
         const onKey = (event) => { if (event.key === 'Escape') dragCancelledRef.current = true }
+        // v0.42.1: the escape flag belongs to ONE gesture. Only the folder and
+        // workspace dragEnds used to reset it, so one Escape poisoned the NEXT
+        // drag: a resting workspace drag was then skipped as "cancelled" and
+        // the user saw a drop that did nothing. Every gesture starts clean.
+        const onStart = () => { dragCancelledRef.current = false; dragDroppedRef.current = false }
         window.addEventListener('keydown', onKey, true)
-        return () => window.removeEventListener('keydown', onKey, true)
+        window.addEventListener('dragstart', onStart, true)
+        return () => {
+          window.removeEventListener('keydown', onKey, true)
+          window.removeEventListener('dragstart', onStart, true)
+        }
       }, [])
       // (v0.36.3) The 600ms group-hover auto-expand is retired: it kept
       // opening groups under a passing cursor ("变下级会被撑开"). The
@@ -6782,7 +6816,21 @@ window.__ModuleLoader__.load({
         if (!el || typeof el !== 'object') return el
         const rowKey = el.key != null ? String(el.key) : 'row-' + index
         bodyRowKeys.push(rowKey)
-        return React.cloneElement(el, { 'data-row-key': rowKey, dataRowKey: rowKey })
+        const row = React.cloneElement(el, { 'data-row-key': rowKey, dataRowKey: rowKey })
+        // v0.42.1: one broken row costs ONE row. The seat boundary alone
+        // blanked the entire sidebar (the useSessions incident: every row
+        // renders inside it), so each row gets its own boundary with a
+        // placeholder that keeps a data-row-key for the reveal and FLIP paths.
+        return E(QuietBoundary, {
+          key: rowKey,
+          label: rowKey,
+          fallback: E('div', {
+            className: 'bw-row bw-row-crashed',
+            'data-row-key': rowKey,
+            role: 'treeitem',
+            title: t('row.renderFailed'),
+          }, t('row.renderFailed')),
+        }, row)
       })
 
       // v0.42.1: reveal a workspace created through either add flow. The
@@ -8185,7 +8233,15 @@ window.__ModuleLoader__.load({
         // Manual renames clear a grafted display (see renameByUser).
         forgetDisplay: (id) => {
           const entry = titleCache.byId[id]
-          if (entry && entry.display !== undefined) { delete entry.display; scheduleTitleSave(); return true }
+          // v0.42.1: keepPrefix must go with the display. Leaving it behind
+          // let the NEXT automatic rename graft the prefix the user just
+          // flattened away (the row then jumped back into an old group).
+          if (entry && (entry.display !== undefined || entry.keepPrefix === true)) {
+            delete entry.display
+            delete entry.keepPrefix
+            scheduleTitleSave()
+            return true
+          }
           return false
         },
       }

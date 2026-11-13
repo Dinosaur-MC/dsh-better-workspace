@@ -172,6 +172,9 @@ window.__ModuleLoader__.load({
       // offers the way back.
       '.bw-empty-action{margin:8px auto 0;display:block;padding:0;border:none;background:none;cursor:pointer;font:inherit;font-size:13px;color:var(--dsw-alias-link,#5b8def)}',
       '.bw-empty-action:hover{text-decoration:underline}',
+      // v0.42.1: a row that failed to render keeps its slot (and its
+      // data-row-key) instead of taking the whole tree down with it.
+      '.bw-row-crashed{color:var(--dsw-alias-label-tertiary,#9a9a9a);font-style:italic;cursor:default}',
       // Session/workspace hover-card body (official Rows.module.css palette:
 // fixed colors, independent of theme aliases).
       '.bw-hover-card{display:flex;flex-direction:column;gap:8px}',

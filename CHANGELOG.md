@@ -40,6 +40,8 @@
 ### fix(graft 只接用户前缀,标题不再被旧前缀掩盖)
 - 标题缓存条目新增 `keepPrefix`:只有「标题自带 `/` 且来源为 user」或「来源缺失但 slug 形状」才为 true;自动叶子改名才允许 graft 出 `display`。
 - `rowTitleOf` 仅在 `keepPrefix === true` **且**当前 wire 来源不是 user 时返回 remembered display。旧实现按形状无条件 graft:宿主已把 `为什么你用 subagents/agent 团队` 改成 `轮询 wait_agent 的依据质疑`(source=user)后,列表仍显示旧前缀,且侧栏多出一个用户从未建过的分组。旧 localStorage 条目没有该字段 ⇒ 不 graft,升级后自愈。
+- **残留字段一并清理**:`forgetDisplay`(用户自己改名 / 拖出分组后调用)此前只删 `display`,留下 `keepPrefix === true` 的旧条目,下一次自动标题变化时又会 graft 回旧前缀;现在同时删除 `keepPrefix`。
+- **user 标题永不 graft**:缓存分支加 `source !== 'user'` 守卫——宿主上的标题已经是用户自己的选择,拼回记忆里的前缀等于覆盖它。
 
 ### fix(会话标题可逐条退出 / 分组)
 - **历史误分组在投影上无法识别**:早年版插件经 `renameSession` 把分组前缀写进标题,宿主因此把「自动标题被加了前缀」记成 `source=user`,与用户显式改名完全同形。实测样本:会话 `session-0bb9d32f-5902-49ea-b5b4-767b2f014a8d`(dsh-win-multi-bash 工作区)的标题事件是 seq14 fallback「你现在有几个shell可用」→ seq16 provider「可用的shell数量询问」→ **seq545「横向对比/沙箱改进」,messageSeqs 为空、source.kind = user**(2026-10-18 工程 turn)。⇒ 上节的 slug 形状判据只作用于「来源缺失」,对这类 user 来源无效。
@@ -47,12 +49,21 @@
 - **入口**:会话右键菜单在「分组开关开启且标题含 /」时出现一项,按当前状态显示「不按 / 分组」(本地 id `flat-toggle` / 官方共享菜单 `bw-flat-toggle`)或「恢复 / 分组」;两态都可切换(此前 `allowGroups === false` 直接等于"没有入口",误分组没有任何出路)。官方菜单桥 `allowGroups` 先查该表,并新增 `flatOf` / `setFlat`。
 - **词典**:21 门语言各加 `menu.flatSession` / `menu.groupSession` 两键,逐门键集对齐由冒烟强制。
 
+### fix(渲染安全网分层)
+- **每行一条边界**:此前整个侧栏座位共用一个 `QuietBoundary`(`guarded()` 包住 BetterBrowser),任何一行抛错都会让整块侧栏降级成空白,且边界不复位——错误消失后仍然是空面,只能刷新。现在 `bodyRows` 的每一行各自包一层 `QuietBoundary`(`key`/`label` = 行键),崩溃的行渲染成一行 28px 斜体占位(`.bw-row-crashed`,文案 `row.renderFailed`,保留 `data-row-key` 以让 AnimatedRows 的位置测量与拖拽几何继续工作),其余行照常。
+- **可复位**:`QuietBoundary` 新增 `getDerivedStateFromProps`——`resetKey` 变化即清错误态;`fallback` 支持函数形态(拿到 error)。座位级边界仍保留,作为最后一道。
+- 词典新增 `row.renderFailed`,21 门齐全。
+
+### fix(拖拽取消标志按手势作用域)
+- **根因**:`dragCancelledRef` / `dragDroppedRef` 只在文件夹行与会话行的 `dragEnd` 里复位;工作区拖拽走延迟帧的 `setDrag` 路径不经过那段代码。一次 `Escape` 取消后,标志会留到下一次拖拽——那次拖拽的 `dragEnd` 直接跳过提交,表现为「拖了一下没反应」。
+- **修法**:窗口级 `dragstart`(捕获阶段)统一把两个标志清零,用一次手势的生命周期界定一次取消;`dragEnd` 里的复位保留(同一次手势内多处调用)。
+
 ### feat(新工作区与新建会话定位)
 - 通过侧栏或对话空态添加工作区后,树自动展开其祖先(名称分组 / 磁盘父工作区)并把该行 `scrollIntoView({ block: 'nearest' })`,不再落在视口外。搜索与单列表视图下清除待定位状态。
 - 新建工作区(侧栏 / 对话空态)与工作区行 `+` 新建会话后,除展开祖先分组,还会把**新会话行**滚进视口:reveal effect 用 `owner.sessionIds.indexOf(currentId)` 认出刚建的 blank 会话(它只有 current 时绘制),查 `[data-row-key="session:<id>"]` 并 `scrollIntoView({ block: 'nearest' })`;宿主还没发布成员时等 1.2s 再退回工作区行,8s 上限。
 
 ### 验证
-- 冒烟 `node tests/smoke.mjs`(等价 `npm test`):94 项全绿,0 fail;守卫覆盖按节点配额与水位窗口(打开窗口内会话不重排、不多出一行)、水位数学(5→10→Infinity、额度 0)、折叠清理与「收起」行、缩进常量、自动色只染图标、slug 形状判据矩阵、graft 来源门控(含幽灵分组回归)、reveal 目标、flat 开关与 21 门键集对齐、工作区排序的乐观写(写在前、RPC 在后、失败回滚、迟到写入跳过)。
+- 冒烟 `node tests/smoke.mjs`(等价 `npm test`):95 项全绿,0 fail;守卫覆盖按节点配额与水位窗口(打开窗口内会话不重排、不多出一行)、水位数学(5→10→Infinity、额度 0)、折叠清理与「收起」行、缩进常量、自动色只染图标、slug 形状判据矩阵、graft 来源门控(含幽灵分组回归与 user 标题不 graft)、reveal 目标、flat 开关与 21 门键集对齐、工作区排序的乐观写(写在前、RPC 在后、失败回滚、迟到写入跳过)、每行独立渲染边界(占位行、resetKey 复位、函数式 fallback)、`dragstart` 统一复位取消标志。
 - `node --check` 三个 client 文件与 `node --check tests/smoke.mjs`、`git diff --check` 通过。
 - 真机:行序与可见行数由用户实拍截图确认(同一节点 5↔6 行、行 3↔1 位);本会话宿主 127.0.0.1:32742 不能重启(早期报过 `ERR_CACHE_READ_FAILURE` 白屏),其余行为以静态守卫 + 纯函数断言 + 真实缓存抽样为准,待用户重启复验。
 

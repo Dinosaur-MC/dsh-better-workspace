@@ -571,6 +571,12 @@ test('title cache: persisted key, batch learning, debounced save, bounded evicti
   assert.match(text, /&& titleSourceOf\(summary\) !== 'user'\) \{/)
   assert.match(text, /entry\.keepPrefix = source === 'user'/)
   assert.match(text, /entry\.display = grafted/)
+  // v0.42.1: a USER title never keeps a prefix, and forgetting a display
+  // forgets the learned prefix with it (otherwise the next automatic rename
+  // re-applied the group the user had just flattened).
+  assert.match(text, /source !== 'user' && grafted !== undefined/)
+  assert.match(text, /entry\.display !== undefined \|\| entry\.keepPrefix === true/)
+  assert.match(text, /delete entry\.keepPrefix/)
   // Manual renames forget the grafted display (authoritative rename).
   assert.match(text, /forgetDisplay\(String\(sessionId\)\)/)
   // Drive the real block with a mocked localStorage.
@@ -655,6 +661,14 @@ test('title cache: persisted key, batch learning, debounced save, bounded evicti
   assert.equal(api.titleCache.byId.h2.keepPrefix, false, 'a provider title never becomes a prefix')
   api.rememberAllTitles({ byId: { h2: { title: 'next leaf', projectionValues: { 'betterWorkspace/titleSource': 'provider' } } } })
   assert.equal(api.titleCache.byId.h2.display, undefined)
+  // v0.42.1: the user flattening a title must DROP the learned prefix; the
+  // next automatic leaf rename then stands verbatim instead of resurrecting
+  // a group nobody asked for.
+  api.rememberAllTitles({ byId: { g1: { title: 'flat leaf', projectionValues: { 'betterWorkspace/titleSource': 'user' } } } })
+  assert.equal(api.titleCache.byId.g1.keepPrefix, undefined, 'a user rename clears the learned prefix')
+  assert.equal(api.titleCache.byId.g1.display, undefined)
+  api.rememberAllTitles({ byId: { g1: { title: 'later auto leaf', projectionValues: { 'betterWorkspace/titleSource': 'provider' } } } })
+  assert.equal(api.titleCache.byId.g1.display, undefined, 'no prefix survives a flattened title')
 })
 
 /**
@@ -2526,8 +2540,16 @@ test('rc.1: shipped seat occupants receive the global useSessionAccess hook', ()
   // the whole sidebar degrades to empty.
   assert.match(text, /useWorkspaces,\n        useSessionAccess,/,
     'the browser must read the rc.1 global access hook')
-  assert.match(text, /const seatStandardProps = \{ useSessionAccess \}/,
-    'the hook is always handed down on rc.1')
+  // v0.42.1 boot log: the shipped forge occupant on
+  // sidebar.session.row.trailing calls useSessions(s => …) directly; handing
+  // down only useSessionAccess threw "useSessions is not a function" and
+  // degraded the whole region to empty. The seat kit carries every global
+  // standard hook, so the reproduction must too — this is a SUPERSET check,
+  // never narrowed back to the one hook an occupant happens to touch.
+  assert.match(text, /const seatStandardProps = \{\n        useSessionAccess,\n        useSessions,\n        useWorkspaces,/,
+    'the seat kit hands down every global standard hook the row seats call')
+  assert.match(text, /typeof useSessionStatus === 'function' \? \{ useSessionStatus \} : null/,
+    'the optional status hook is handed down only when the host provides it')
   assert.match(text, /function ShippedSeatOccupant\(\{ seat, ownerProps, standardProps, t, useMenuOpenState \}\)/,
     'the seat occupant accepts standard props')
   assert.match(text, /Object\.assign\(\{\}, standardProps \|\| null, ownerProps, bound/,
@@ -3235,8 +3257,11 @@ test('v0.36.10: level-mate groups nest, lift and survive a resting drag', () => 
     'one drag state mirror for the dragEnd fallback')
   assert.equal((text.match(/dragDroppedRef\.current = true/g) || []).length, 6,
     'every preventDefault drop marks itself (folder drop, ws drop, owning-row nest, group lift, group reorder, ws drop)')
-  assert.equal((text.match(/dragCancelledRef\.current = false/g) || []).length, 2,
-    'both dragEnds reset the escape flag')
+  assert.equal((text.match(/dragCancelledRef\.current = false/g) || []).length, 3,
+    'both dragEnds plus every dragstart reset the escape flag')
+  assert.match(text, /const onStart = \(\) => \{ dragCancelledRef\.current = false; dragDroppedRef\.current = false \}/,
+    'one gesture cannot inherit the previous gesture\'s Escape')
+  assert.match(text, /window\.addEventListener\('dragstart', onStart, true\)/)
   assert.match(text, /if \(committed \|\| cancelled \|\| !live \|\| live\.kind !== 'folder' \|\| !live\.over\) return/,
     'the folder dragEnd falls back to the armed over only when no drop and no escape happened')
   assert.match(text, /if \(over\.kind === 'folder'\) \{\n            if \(over\.zone === 'before' \|\| over\.zone === 'after'\) commitFolderReorder\(live\.source, over\.target, over\.zone, over\.node\)\n            else commitFolderMoveInto\(live\.source, over\.target\)/,
@@ -3249,6 +3274,32 @@ test('v0.36.10: level-mate groups nest, lift and survive a resting drag', () => 
     'the workspace dragEnd replays the armed workspace reorder')
   assert.match(text, /if \(event\.key === 'Escape'\) dragCancelledRef\.current = true/,
     'Escape still cancels the gesture for real')
+})
+
+/**
+ * v0.42.1 render isolation: one broken row must cost ONE row. The only
+ * boundary used to wrap the whole seat, so a single throwing row blanked the
+ * sidebar (the useSessions boot incident: every row renders inside it). Every
+ * body row now carries its own boundary with a placeholder, and a boundary
+ * can clear itself when the data behind its resetKey changes.
+ */
+test('render safety: every body row is isolated, and a boundary can reset', () => {
+  const text = clientText()
+  // The boundary: resettable + a rendered fallback instead of a silent null.
+  assert.match(text, /static getDerivedStateFromProps\(props, state\) \{\n        if \(props\.resetKey === state\.resetKey\) return null/)
+  assert.match(text, /if \(typeof fallback === 'function'\) return fallback\(this\.state\.error\)/)
+  assert.match(text, /return fallback === undefined \? null : fallback/)
+  // Each body row is wrapped under its own key, with a placeholder that keeps
+  // data-row-key so the reveal and FLIP paths still resolve the slot.
+  assert.match(text, /return E\(QuietBoundary, \{\n          key: rowKey,\n          label: rowKey,/)
+  assert.match(text, /className: 'bw-row bw-row-crashed',\n            'data-row-key': rowKey,/)
+  assert.match(text, /title: t\('row\.renderFailed'\)/)
+  // The seat-level boundary remains the last resort, never the only net.
+  assert.match(text, /E\(QuietBoundary, null, E\(component, props\)\)/)
+  // Placeholder styling, and every dictionary translates it.
+  assert.match(read('src/client.styles.js'), /\.bw-row-crashed\{[^}]*--dsw-alias-label-tertiary/)
+  assert.equal((read('src/client.locales.js').match(/'row\.renderFailed':/g) || []).length, 21,
+    'all 21 dictionaries carry the row placeholder')
 })
 
 test('v0.36.13: every tree-shaped surface shares ONE view rule (no per-surface drift)', () => {
