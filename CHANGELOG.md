@@ -5,6 +5,12 @@
 ## v0.42.1 — 2026-11-11
 
 **类型**:fix + feat + perf(会话配额改为窗口语义并逐段展开、缩进与配色贴近官方、拖拽指示器统一为官方插入线、工作区排序即时落位、自动标题不再造分组、新建会话定位、逐会话退出 / 分组)
+### fix(host 半不再卡在「等待依赖」)
+- **症状**:插件卡片状态显示「等待依赖」(en *Waiting for dependencies*),开关在、客户端侧栏照常工作,但宿主半从未执行——没有 Config 面、没有 `betterWorkspace/titleSource` 投影。
+- **根因(宿主源码取证)**:状态文案来自 host 的插件盘点,直接读 cordis 纤维的 state;0 = PENDING(apply 未跑)。v0.42.1 评审收尾把 host 半写成 `export const inject = { optional: ['sessionProjections'] }`,而本代 cordis 的 `Inject.resolve` 只认「服务名数组」或「名 → 拦截配置对象」两种形状,不存在 `{ required, optional }`;对象形态会被逐键展开,于是插件实际在等一个**名叫 `optional` 的服务**。该服务无人提供 ⇒ `_refresh()` 的 epoch 恒为 INACTIVE(与初始值相等)⇒ `_setEpoch` 判等直接返回 ⇒ 纤维停在 state 0,永不进入 LOADING/ACTIVE。硬数组注入会以同样方式在服务缺席时挂起。
+- **修法**:删除 `inject` 导出,改由 `ctx.inject(['sessionProjections'], attempt)` 建**子纤维**承接可选服务——只有子纤维等待,插件行立刻激活,`registerTitleSource` 的「服务缺席、退回显示层兜底」分支保持可达;普通上下文(测试)仍直接尝试注册。冒烟断言改为「无 inject 导出 + 存在该子纤维调用」。
+- 生效需要宿主重载该插件(重启 DSH 或禁用/启用一次),已在运行的纤维不会自己离开 PENDING。
+
 
 ### fix(会话配额与展开)
 - **配额改为按节点独立计算**:此前 `limitSessionsForRender` 在工作区整棵会话树之前对全量扁平列表限额,导致子分组内的会话吃掉根层配额(开启「展开 5 个」时根层只剩 1 行)。现在工作区自己的直属会话与每一个会话分组各自拥有同一个 `prefs.sessionLimit` 额度,互不挤占。
@@ -80,8 +86,13 @@
 - **README 补 v0.42.1**:「其余亮点」新增五条——配额按节点独立与逐次展开、行样式贴近官方(缩进 / 动作区 / 自动色只染图标)、自动标题更可靠与逐会话「不按 / 分组」开关、新建即定位、渲染安全网与 CI;不再停留在 v0.42.0 的功能面。
 - **host 半注入改为可选**:`src/index.js` 的 `inject` 由硬数组改为 `{ optional: ['sessionProjections'] }`;`registerTitleSource` 读服务改走 `ctx.get('sessionProjections')`(只有测试用的普通对象 ctx 才退回属性读取),服务缺席时显式返回 false。此前硬注入会让「服务缺席、退回显示层兜底」分支不可达,与冒烟里的降级断言自相矛盾;现在两条路径都可达。
 - 冒烟新增 CI 门禁断言(触发面、Node 24、无 lockfile 的安装方式、不跑 `npm ci`);host 半测试补可选服务缺席路径与 `inject` 形状。
+### fix(排序:占位行恒前置、活动会话冒泡)
+- **占位行恒前置,对齐官方 `sectionMembers`**:`pinnedPartition` 此前在没有任何置顶行时提前 return,manual 序下「新会话」占位行会落在列表中间;官方 `sectionMembers(members, pinned, archived)` 的结构是 `[...placeholders, ...leading, ...rest]`,与有没有置顶行无关。现在恒返回「占位 → 置顶 → 其余」。
+- **活动会话冒泡以显示层身份回归**:v0.42.1 把 keep 集前插改成纯窗口后,运行中 / 等你审批 / 子代理运行的会话不再浮到节点顶部(用户确认要恢复)。新增纯函数 `bubbleRows(rows, enabled)`:留住行首占位行,把 `running || pending || subagents > 0` 的行前置,其余保序;它跑在 watermark 裁剪**之后**,只改顺序、绝不改可见行数(此前「展开 5 条却看到 6 条」正是排序与限额缠绕所致)。打开但空闲的会话永不冒泡。
+- 设置卡新增开关「活动会话置顶」(`prefs.bubbleActive`,默认开;视图偏好留在浏览器本地 store),关掉即恢复纯列表序。
+
 ### 验证
-- 冒烟 `node tests/smoke.mjs`(等价 `npm test`):98 项全绿,0 fail;守卫覆盖按节点配额与水位窗口(打开窗口内会话不重排、不多出一行)、水位数学(5→10→Infinity、额度 0)、折叠清理与「收起」行、缩进常量、自动色只染图标、slug 形状判据矩阵、graft 来源门控(含幽灵分组回归与 user 标题不 graft)、reveal 目标、flat 开关与 21 门键集对齐、工作区排序的乐观写(写在前、RPC 在后、失败回滚、迟到写入跳过)、每行独立渲染边界(占位行、resetKey 复位、函数式 fallback)、`dragstart` 统一复位取消标志、空 path 不是根、投影注册幂等、`HOST_CONFIG_FIELDS` 与 host 半一致、CI 工作流的触发面与安装方式、host 半可选注入的缺席路径。
+- 冒烟 `node tests/smoke.mjs`(等价 `npm test`):99 项全绿,0 fail;守卫覆盖按节点配额与水位窗口(打开窗口内会话不重排、不多出一行)、水位数学(5→10→Infinity、额度 0)、折叠清理与「收起」行、缩进常量、自动色只染图标、slug 形状判据矩阵、graft 来源门控(含幽灵分组回归与 user 标题不 graft)、reveal 目标、flat 开关与 21 门键集对齐、工作区排序的乐观写(写在前、RPC 在后、失败回滚、迟到写入跳过)、每行独立渲染边界(占位行、resetKey 复位、函数式 fallback)、`dragstart` 统一复位取消标志、空 path 不是根、投影注册幂等、`HOST_CONFIG_FIELDS` 与 host 半一致、CI 工作流的触发面与安装方式、host 半可选注入的缺席路径、占位行恒前置与冒泡排序(冒泡跑在裁剪之后、不改可见行数、可关闭)。
 - `node --check` 三个 client 文件与 `node --check tests/smoke.mjs`、`git diff --check` 通过。
 - 真机:行序与可见行数由用户实拍截图确认(同一节点 5↔6 行、行 3↔1 位);本会话宿主 127.0.0.1:32742 不能重启(早期报过 `ERR_CACHE_READ_FAILURE` 白屏),其余行为以静态守卫 + 纯函数断言 + 真实缓存抽样为准,待用户重启复验。
 

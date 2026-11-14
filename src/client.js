@@ -411,7 +411,12 @@ window.__ModuleLoader__.load({
         else if (row.blank) blanks.push(row)
         else rest.push(row)
       }
-      if (pins.length === 0) return rows
+      if (pins.length === 0 && blanks.length === 0) return rows
+      // Official sectionMembers fronts PLACEHOLDERS unconditionally, with or
+      // without pinned rows: the New Session placeholder must sit on top of
+      // its section. The old early return skipped that whenever the section
+      // had no pins, so a host that appends new members left the placeholder
+      // buried at the bottom.
       return [...blanks, ...pins, ...rest]
     }
 
@@ -1276,6 +1281,31 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Activity bubbling (v0.42.1, user report: "为什么会话不会自动冒泡了").
+     * Rows that are ACTIVE — running, waiting for an interaction, or running a
+     * subagent — rise to the top of their node, ahead of the idle rows but
+     * after the leading placeholders (the New Session row keeps its slot).
+     * Only the visible (already watermark-cut) set is reordered, so the row
+     * count never changes; and the open-but-idle Session stays where it is:
+     * pulling the current row to the top on open was the older reported bug.
+     * Pure: returns the input array untouched when nothing bubbles.
+     */
+    const bubbleRows = (rows, enabled) => {
+      if (!enabled || !rows || rows.length < 2) return rows
+      let at = 0
+      while (at < rows.length && rows[at].blank) at += 1
+      const hot = []
+      const rest = []
+      for (let i = at; i < rows.length; i += 1) {
+        const row = rows[i]
+        if (row.running || row.pending || row.subagents > 0) hot.push(row)
+        else rest.push(row)
+      }
+      if (hot.length === 0) return rows
+      return [...rows.slice(0, at), ...hot, ...rest]
+    }
+
+    /**
      * Normalize a declared group path: split on "/", drop blank segments (so
      * "  " and "a//b" cannot create nameless levels), trim each name. Returns
      * '' when nothing is left — the store actions treat that as "do nothing".
@@ -1292,7 +1322,7 @@ window.__ModuleLoader__.load({
       // LITERAL, not a spread of DEFAULT_APPEARANCE: init() is eval-harness
       // friendly (no cross-section reference), and the smoke suite asserts the
       // two stay in lockstep field by field.
-      init: () => ({ expanded: {}, sessionsExpanded: {}, sessionGroups: {}, sessionOrder: {}, sessionFlat: {}, prefs: { compactChains: true, sessionLimit: 0, sessionAgeDays: 0, appearance: { color: '', glow: 0, weight: 0, shadow: false, stroke: false, strokeWidth: 1, strokeColor: '#808080' } }, styling: {}, groupBy: 'workspace-tree', orderBy: 'manual', archivedFilter: 'default', workspaceArchivedFilters: {}, workspaceGroupMode: 'disk', sessionTitleSlash: true, workspaceTitleSlash: false, ungroupedOpen: true, folders: { ws: {}, sess: {} }, folderOrder: {} }),
+      init: () => ({ expanded: {}, sessionsExpanded: {}, sessionGroups: {}, sessionOrder: {}, sessionFlat: {}, prefs: { compactChains: true, sessionLimit: 0, sessionAgeDays: 0, bubbleActive: true, appearance: { color: '', glow: 0, weight: 0, shadow: false, stroke: false, strokeWidth: 1, strokeColor: '#808080' } }, styling: {}, groupBy: 'workspace-tree', orderBy: 'manual', archivedFilter: 'default', workspaceArchivedFilters: {}, workspaceGroupMode: 'disk', sessionTitleSlash: true, workspaceTitleSlash: false, ungroupedOpen: true, folders: { ws: {}, sess: {} }, folderOrder: {} }),
       // NOTE: hydration REPLACES the state with the persisted whole value —
       // init defaults never merge. Every action must tolerate a missing key
       // (states persisted by older plugin versions lack sessionGroups), and
@@ -3365,6 +3395,10 @@ window.__ModuleLoader__.load({
       const density = densityRaw === 'compact' || densityRaw === 'roomy' ? densityRaw : 'comfortable'
       // Session count badge: the shipped sidebar retired it; default OFF.
       const showCount = prefs.showCount === true
+      // Activity bubbling (v0.42.1): running / waiting / subagent rows rise to
+      // the top of their own node. Absent key = ON — the behaviour the
+      // pre-v0.42.1 quota produced by accident, now scoped to real activity.
+      const bubbleActive = prefs.bubbleActive !== false
       // Grouping strategy (v0.21.0, issue #7): rides the view store top-level
       // key next to groupBy/orderBy and stays browser-local, like every other
       // view option. The legacy workspaceTitleSlash boolean is consulted only
@@ -3543,6 +3577,18 @@ window.__ModuleLoader__.load({
           }, E('span', { className: 'bw-switch-thumb' })),
         ),
         E('div', { className: 'bw-hint' }, t('settings.showCount.hint')),
+        E('div', { className: 'bw-setting-row' },
+          E('div', { className: 'bw-setting-label' }, t('settings.bubbleActive')),
+          E('button', {
+            type: 'button',
+            role: 'switch',
+            'aria-checked': bubbleActive,
+            'aria-label': t('settings.bubbleActive'),
+            className: cls('bw-switch', bubbleActive && 'bw-switch-on'),
+            onClick: () => { setPref('bubbleActive', !bubbleActive) },
+          }, E('span', { className: 'bw-switch-thumb' })),
+        ),
+        E('div', { className: 'bw-hint' }, t('settings.bubbleActive.hint')),
         E('div', { className: 'bw-setting-row' },
           E('div', { className: 'bw-setting-label' }, t('settings.autoStyle')),
           E('button', {
@@ -4030,6 +4076,10 @@ window.__ModuleLoader__.load({
       const shared = makeSharedWrites(actions, stylingMap)
       const compactChains = prefsMap.compactChains !== false
       const statusPulse = prefsMap.statusPulse !== false
+      // Activity bubbling (v0.42.1): running / waiting / subagent rows rise to
+      // the top of their node. Absent key = ON (the behaviour the pre-v0.42.1
+      // quota did by accident, now scoped to genuinely active rows).
+      const bubbleActive = prefsMap.bubbleActive !== false
       // Session-action surface gate (v0.20.0): the hover quick buttons. The
       // right-click ctx menu is always on since the in-row "..." triggers
       // retired (session row v0.35.0, workspace row v0.35.1).
@@ -6528,7 +6578,9 @@ window.__ModuleLoader__.load({
         const limited = quota === Infinity
           ? { rows: sessions, hidden: 0 }
           : limitSessionsForRender(sessions, quota, false, currentId)
-        const out = limited.rows.map((session) => renderSessionRow(session, depth, workspaceId))
+        // Active rows bubble to the top of this node; the cut above already
+        // decided WHICH rows are visible, so bubbling cannot change the count.
+        const out = bubbleRows(limited.rows, bubbleActive).map((session) => renderSessionRow(session, depth, workspaceId))
         if (searching || !(sessionLimit > 0)) return out
         // Official overflow row: 28px meta row whose text starts at the icon
         // gutter (34px) plus this node's indent.

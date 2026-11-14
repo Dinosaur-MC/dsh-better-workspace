@@ -50,21 +50,41 @@ export const Config = Schema === null
     appearance: Schema.dict(Schema.any()).default({}).volatile(),
   })
 
-/**
- * OPTIONAL, not required. A hard `inject: ['sessionProjections']` keeps the
- * fiber inactive until the service is there, which contradicts the best-effort
- * contract of `registerTitleSource` (its "service absent, keep the display
- * fallback" branch would be unreachable — review 2026-11-13). Optional
- * injection activates the row immediately and re-runs `apply` only when the
- * service actually appears.
+/*
+ * NO `export const inject` — deliberately.
+ *
+ * Cordis normalizes a plugin's `inject` through `Inject.resolve`, and that
+ * function only understands two shapes: an ARRAY of service names, or an
+ * OBJECT read as a name → intercept-config map. There is no
+ * `{ required, optional }` form in this build. The previous
+ * `{ optional: ['sessionProjections'] }` therefore asked for a service
+ * literally named "optional"; no fiber provides it, so `_refresh()` keeps the
+ * fiber epoch at INACTIVE, `_setEpoch` sees no change, and the fiber stays in
+ * state 0 = PENDING forever: the plugin card reads "waiting for dependencies"
+ * (zh 等待依赖), `apply` never runs, no Config surface and no title
+ * projection. A hard array inject would pend the same way whenever the service
+ * is absent.
+ *
+ * The optional consumer is a child fiber created with `ctx.inject` instead:
+ * only that child waits for the service, the row itself activates immediately,
+ * and `registerTitleSource`'s "service absent" fallback stays reachable.
  */
-export const inject = { optional: ['sessionProjections'] }
-
 export async function apply(ctx) {
   const log = ctx && ctx.logger && typeof ctx.logger.info === 'function'
     ? (msg) => ctx.logger.info(msg)
     : (msg) => console.log(msg)
-  const registered = await registerTitleSource(ctx, log)
-  log('[dsh-better-workspace] host half loaded; UI runs in the browser (client half)'
-    + (registered ? '; session title provenance projection registered' : '; title provenance unavailable'))
+  const attempt = async (scoped) => {
+    const registered = await registerTitleSource(scoped, log)
+    log('[dsh-better-workspace] host half loaded; UI runs in the browser (client half)'
+      + (registered ? '; session title provenance projection registered' : '; title provenance unavailable'))
+  }
+  // Real host context: the soft child fiber owns the wait, the row does not.
+  if (ctx && typeof ctx.inject === 'function') {
+    ctx.inject(['sessionProjections'], attempt)
+    log('[dsh-better-workspace] host half loaded; the browser half carries the UI; '
+      + 'session title provenance waits on the optional sessionProjections service')
+    return
+  }
+  // Plain contexts (tests, harnesses without the service API): best effort now.
+  await attempt(ctx)
 }

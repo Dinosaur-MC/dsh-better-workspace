@@ -408,10 +408,18 @@ test('host half imports cleanly, registers title provenance, and survives a miss
   const plugin = await import('../src/index.js')
   assert.equal(plugin.name, 'dsh-better-workspace')
   assert.equal(typeof plugin.apply, 'function')
-  // OPTIONAL, not hard: a required inject would make the "service absent"
-  // fallback below unreachable (review 2026-11-13).
-  assert.deepEqual(plugin.inject, { optional: ['sessionProjections'] })
-  assert.doesNotMatch(JSON.stringify(plugin.inject), /required/)
+  // NO static `inject` export at all (2026-11-14). Cordis `Inject.resolve`
+  // reads an object as a name → intercept map, so the old
+  // `{ optional: ['sessionProjections'] }` waited for a service literally
+  // named "optional": the fiber never left PENDING, the plugin card showed
+  // "waiting for dependencies", and apply() never ran. Optional consumers use
+  // a ctx.inject child fiber so only the child waits.
+  assert.equal(plugin.inject, undefined)
+  const hostText = read('src/index.js')
+  assert.doesNotMatch(hostText, /^export const inject\b/m, 'no inject export may come back')
+  assert.doesNotMatch(hostText, /^export const inject = \{ optional:/m,
+    'the { optional } object form is not a cordis shape — it would wait for a service named "optional"')
+  assert.match(hostText, /ctx\.inject\(\['sessionProjections'\], attempt\)/)
   let logged = ''
   const registered = []
   const ctx = {
@@ -427,8 +435,8 @@ test('host half imports cleanly, registers title provenance, and survives a miss
   // the client keeps its text fallback.
   await plugin.apply({ logger: { info: (m) => { logged = String(m) } } })
   assert.match(logged, /title provenance unavailable/)
-  // Optional injection means the Context proxy may not expose the service at
-  // all: the lookup has to go through ctx.get and degrade, not throw.
+  // The service is optional, so the Context proxy may not expose it at all:
+  // the lookup goes through ctx.get and degrades instead of throwing.
   const seen = []
   const probeSafe = {
     logger: { info: (m) => { logged = String(m); seen.push(String(m)) } },
@@ -784,7 +792,7 @@ test('appearance: stroke ships OFF (v0.31.0, legacy ON preserved), gray color de
   // Fresh installs never hydrate: createViewStore's init bakes the shipped
   // default (stroke OFF) into prefs.appearance, and the baked literal must
   // stay in lockstep with DEFAULT_APPEARANCE.
-  const initPrefs = /prefs: \{ compactChains: true, sessionLimit: 0, sessionAgeDays: 0, appearance: \{([^}]*)\}/.exec(text)
+  const initPrefs = /prefs: \{ compactChains: true, sessionLimit: 0, sessionAgeDays: 0, bubbleActive: true, appearance: \{([^}]*)\}/.exec(text)
   assert.ok(initPrefs, 'init must bake an appearance record for fresh installs')
   const baked = {}
   for (const pair of initPrefs[1].matchAll(/(\w+): ('[^']*'|[^,}]+)/g)) baked[pair[1]] = String(pair[2]).replace(/^'|'$/g, '')
@@ -1093,7 +1101,7 @@ test('view options: group/order menu + the two slash toggles (0.13.0)', () => {
   assert.match(text, /setWorkspaceGroupMode: \(d, value\)/)
   assert.match(text, /setUngroupedOpen: \(d, value\)/)
   // v0.31.0: init bakes prefs.appearance (stroke ships OFF) for fresh installs.
-  assert.match(text, /prefs: \{ compactChains: true, sessionLimit: 0, sessionAgeDays: 0, appearance: \{ color: '', glow: 0, weight: 0, shadow: false, stroke: false, strokeWidth: 1, strokeColor: '#808080' \} \}/)
+  assert.match(text, /prefs: \{ compactChains: true, sessionLimit: 0, sessionAgeDays: 0, bubbleActive: true, appearance: \{ color: '', glow: 0, weight: 0, shadow: false, stroke: false, strokeWidth: 1, strokeColor: '#808080' \} \}/)
   assert.match(text, /useStore\(s => s\.ungroupedOpen\) !== false/)
   for (const action of ['setGroupBy', 'setOrderBy', 'setSessionTitleSlash', 'setWorkspaceTitleSlash']) {
     assert.ok(text.includes(action + ': (d, value)'), 'store action ' + action)
@@ -1543,6 +1551,58 @@ test('session quota: the open row keeps its place and never adds a row', () => {
   // Off/lifted still means everything.
   assert.equal(limitSessionsForRender(rows, 0, false, 's3').rows.length, 8)
   assert.equal(limitSessionsForRender(rows, 5, true, 's3').rows.length, 8)
+})
+
+/**
+ * v0.42.1: two ordering rules the sidebar owes the shipped browser.
+ *   1. sectionMembers fronts PLACEHOLDERS unconditionally — with or without
+ *      pinned rows — so the New Session row always tops its section.
+ *   2. Active rows (running / waiting for you / running sub-agents) bubble to
+ *      the top of their own node, while the open-but-idle row keeps its slot.
+ *      The bubble runs on the ALREADY watermark-cut list, so it can never
+ *      change the visible count.
+ */
+test('session order: placeholders front their section; active rows bubble', () => {
+  const text = clientText()
+
+  const pinStart = text.indexOf('const pinnedPartition = (rows) => {')
+  assert.ok(pinStart > 0, 'pinnedPartition exists')
+  const pinEnd = text.indexOf('const orderSessionsByRecency', pinStart)
+  assert.ok(pinEnd > pinStart)
+  const { pinnedPartition } = new Function(text.slice(pinStart, pinEnd) + '\nreturn { pinnedPartition }')()
+
+  const row = (id, extra) => ({ id, blank: false, running: false, subagents: 0, pinned: false, pending: false, ...extra })
+  const blank = row('new', { blank: true })
+  const pin = row('p1', { pinned: true })
+  const idle = row('s1')
+
+  // No pinned rows: the placeholder still fronts the section (official
+  // sectionMembers). The old code returned the list untouched here.
+  assert.deepEqual(pinnedPartition([idle, blank]).map((r) => r.id), ['new', 's1'])
+  assert.deepEqual(pinnedPartition([blank, pin, idle]).map((r) => r.id), ['new', 'p1', 's1'])
+  const untouched = [idle]
+  assert.equal(pinnedPartition(untouched), untouched, 'nothing to arrange returns the same array')
+  assert.doesNotMatch(text, /if \(pins\.length === 0\) return rows/)
+
+  const bubStart = text.indexOf('const bubbleRows = (rows, enabled) => {')
+  assert.ok(bubStart > 0, 'bubbleRows exists')
+  const bubEnd = text.indexOf('const declaredPathOf', bubStart)
+  assert.ok(bubEnd > bubStart)
+  const { bubbleRows } = new Function(text.slice(bubStart, bubEnd) + '\nreturn { bubbleRows }')()
+
+  const list = [blank, row('a'), row('b', { running: true }), row('c'), row('d', { pending: 'approval' }), row('e', { subagents: 2 })]
+  assert.deepEqual(bubbleRows(list, true).map((r) => r.id), ['new', 'b', 'd', 'e', 'a', 'c'], 'active rows rise, the placeholder stays on top')
+  assert.equal(bubbleRows(list, false), list, 'the switch turns the reorder off')
+  const quiet = [row('x'), row('y')]
+  assert.equal(bubbleRows(quiet, true), quiet, 'an all-idle node keeps order and identity')
+  assert.deepEqual(bubbleRows([row('s1'), row('s2')], true).map((r) => r.id), ['s1', 's2'], 'an open idle Session is never hoisted')
+
+  // Wiring: the bubble runs after the watermark cut, gated by the preference.
+  assert.match(text, /const bubbleActive = prefsMap\.bubbleActive !== false/)
+  assert.match(text, /bubbleRows\(limited\.rows, bubbleActive\)/)
+  assert.match(text, /bubbleActive: true, appearance:/)
+  assert.match(text, /t\('settings\.bubbleActive'\)/)
+  assert.match(text, /setPref\('bubbleActive', !bubbleActive\)/)
 })
 
 /**
@@ -3464,7 +3524,7 @@ test('session age filter hides old rows without archiving them', () => {
   assert.match(text, /row\.blank \|\| row\.id === currentId \|\| row\.pinned/)
   assert.match(text, /row\.running \|\| row\.pending \|\| row\.completed \|\| row\.subagents > 0/)
   assert.match(text, /if \(!rows \|\| rows\.length === 0 \|\| searching \|\| !\(days > 0\)\) return rows \|\| \[\]/)
-  assert.match(text, /sessionLimit: 0, sessionAgeDays: 0, appearance:/)
+  assert.match(text, /sessionLimit: 0, sessionAgeDays: 0, bubbleActive: true, appearance:/)
   // The settings card reads the preference from its own prefs; the browser
   // reads prefsMap. A missing definition used to crash both surfaces.
   const settings = text.slice(text.indexOf('    function BetterWorkspaceSettings('), text.indexOf('    function BetterBrowser('))
