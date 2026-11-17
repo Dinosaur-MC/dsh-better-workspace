@@ -183,6 +183,11 @@ test('hero picker: the sidebar tree shadows the shipped flat picker (v0.22.0)', 
   assert.match(text, /slots\.entries\(HERO_FLOW_HOLE\)/)
   assert.match(text, /function HeroWorkspacePicker\(props\)/)
   assert.match(text, /function PickerRow\(/)
+  // rc.2+ anchors a portal Menu on the owner's chip element (anchorRef); older
+  // hosts still position from the rect predicate. Send both.
+  const hero = text.slice(text.indexOf('function HeroWorkspacePicker('), text.indexOf('function BetterBrowser('))
+  assert.match(hero, /anchorRef,/)
+  assert.match(hero, /getAnchorRect: \(\) => \(anchorRef && anchorRef\.current/)
   // The tree reads the SAME view-store selectors the sidebar reads, so a view
   // option changed on either surface moves both.
   assert.match(text, /workspaceGroupModeOf\(state && state\.workspaceGroupMode, state && state\.workspaceTitleSlash\)/)
@@ -332,7 +337,7 @@ test('v0.39.2: host title provenance, not title text, decides grouping (issue #1
   assert.equal(deliberateGroupPrefix('/abs/path'), false)
   assert.equal(deliberateGroupPrefix('C:/Users/me'), false)
 
-  // v0.42.1: the per-session flat switch. Legacy mis-groups were written by the
+  // v0.44.0: the per-session flat switch. Legacy mis-groups were written by the
   // pre-0.39 plugin through renameSession, so the host records source=user and
   // no provenance signal can tell them apart — the user needs a reversible
   // opt-out that leaves the title untouched.
@@ -603,19 +608,19 @@ test('title cache: persisted key, batch learning, debounced save, bounded evicti
   // the wire title stays group-less; the fallback stays sessionTitleOf.
   assert.match(text, /const rowTitleOf = \(id, summary, graftedOn\) => \{/)
   assert.match(text, /return sessionTitleOf\(summary, t, rememberedTitleOf\(id\)\)/)
-  // v0.42.1: one display-title resolution per row feeds title, leaf and the
+  // v0.44.0: one display-title resolution per row feeds title, leaf and the
   // grouping gate (resolving it three times per row per snapshot was waste).
   assert.match(text, /const display = rowTitleOf\(id, summary, prefsMap\.graftTitlePrefix !== false\)/)
   assert.match(text, /title: display,/)
   assert.match(text, /leaf: display,/)
   assert.match(text, /rowTitleOf\(dialog\.sessionId, summary, prefsMap\.graftTitlePrefix !== false\)/)
-  // v0.42.1: only a prefix learned from a user-authored title may be grafted,
+  // v0.44.0: only a prefix learned from a user-authored title may be grafted,
   // and a user rename on the wire always stands verbatim.
   assert.match(text, /remembered\[id\]\.keepPrefix === true/)
   assert.match(text, /&& titleSourceOf\(summary\) !== 'user'\) \{/)
   assert.match(text, /entry\.keepPrefix = source === 'user'/)
   assert.match(text, /entry\.display = grafted/)
-  // v0.42.1: a USER title never keeps a prefix, and forgetting a display
+  // v0.44.0: a USER title never keeps a prefix, and forgetting a display
   // forgets the learned prefix with it (otherwise the next automatic rename
   // re-applied the group the user had just flattened).
   assert.match(text, /source !== 'user' && grafted !== undefined/)
@@ -688,7 +693,7 @@ test('title cache: persisted key, batch learning, debounced save, bounded evicti
   api.rememberAllTitles(list4)
   assert.equal(api.titleCache.byId.g1.title, 'Other/renamed')
   assert.equal(api.titleCache.byId.g1.display, undefined, 'grouped rename clears the display')
-  // v0.42.1 ghost-group regression (issue #25): a prose auto title must not
+  // v0.44.0 ghost-group regression (issue #25): a prose auto title must not
   // establish a prefix, and a later user rename must never inherit one.
   api.rememberAllTitles({ byId: { h1: { title: '为什么你用 subagents/agent 团队' } } })
   assert.equal(api.titleCache.byId.h1.keepPrefix, false, 'a sentence head is not an authored prefix')
@@ -705,7 +710,7 @@ test('title cache: persisted key, batch learning, debounced save, bounded evicti
   assert.equal(api.titleCache.byId.h2.keepPrefix, false, 'a provider title never becomes a prefix')
   api.rememberAllTitles({ byId: { h2: { title: 'next leaf', projectionValues: { 'betterWorkspace/titleSource': 'provider' } } } })
   assert.equal(api.titleCache.byId.h2.display, undefined)
-  // v0.42.1: the user flattening a title must DROP the learned prefix; the
+  // v0.44.0: the user flattening a title must DROP the learned prefix; the
   // next automatic leaf rename then stands verbatim instead of resurrecting
   // a group nobody asked for.
   api.rememberAllTitles({ byId: { g1: { title: 'flat leaf', projectionValues: { 'betterWorkspace/titleSource': 'user' } } } })
@@ -1284,6 +1289,9 @@ test('context menu: official alignment via the workspace dictionary (0.14.0)', (
   assert.match(text, /deliberately NOT styled destructive/)
   // Rendered through the official primitives Menu, positioned by the event.
   assert.match(text, /typeof ui\.Menu === 'function'\) \? E\(ui\.Menu/)
+  // rc.2+ positions the popup from the captured client point; the rect
+  // predicate stays for hosts that still read it.
+  assert.match(text, /anchorPoint: \{ x: ctx\.x, y: ctx\.y \},/)
   assert.match(text, /getAnchorRect: \(\) => new DOMRect\(ctx\.x, ctx\.y, 0, 0\)/)
   // dsh 0.2.1-alpha.5's fifth official entry rides after archive (order 450):
   // the clipboard write is feature-probed on the host primitive, so the whole
@@ -1429,7 +1437,7 @@ test('issue round: exports fix, icon pick, ungrouped fold, tri-state, quota (v0.
   // the first 50 non-blank rows, the shipped watermark's auto cap); the
   // overflow row rides the legacy sessions.expand copy; search bypasses the
   // quota.
-  // v0.42.1: the attention set no longer partitions the list — it raises the
+  // v0.44.0: the attention set no longer partitions the list — it raises the
   // watermark to its own position, so the open row stays where the Host put it.
   assert.match(text, /const attention = \(index <= SESSION_ATTENTION_WINDOW && \(row\.running \|\| row\.subagents > 0 \|\| row\.pending \|\| row\.completed \|\| row\.id === currentId\)\) \|\| row\.pinned/)
   assert.match(text, /const SESSION_ATTENTION_WINDOW = 50/)
@@ -1446,7 +1454,7 @@ test('issue round: exports fix, icon pick, ungrouped fold, tri-state, quota (v0.
 })
 
 /**
- * v0.42.1: the official collapsed group drops its watermark when it closes and
+ * v0.44.0: the official collapsed group drops its watermark when it closes and
  * comes back at the base count. The plugin's quota is a per-workspace lift
  * flag, so closing the workspace (or any folder that hides it) must discard
  * that flag — otherwise reopening the workspace shows the full list forever.
@@ -1506,7 +1514,7 @@ test('session quota: collapsing drops lifted rows; a lifted list keeps a collaps
 })
 
 /**
- * v0.42.1: the quota is a WINDOW over the list, not a re-partition. The shipped
+ * v0.44.0: the quota is a WINDOW over the list, not a re-partition. The shipped
  * browser keeps list order and raises the watermark to cover an attention row
  * (requiredWatermark); it never moves that row to the front. The plugin used to
  * return [...keep, ...idle.slice(0, limit)], so opening any Session inside the
@@ -1554,7 +1562,7 @@ test('session quota: the open row keeps its place and never adds a row', () => {
 })
 
 /**
- * v0.42.1: two ordering rules the sidebar owes the shipped browser.
+ * v0.44.0: two ordering rules the sidebar owes the shipped browser.
  *   1. sectionMembers fronts PLACEHOLDERS unconditionally — with or without
  *      pinned rows — so the New Session row always tops its section.
  *   2. Active rows (running / waiting for you / running sub-agents) bubble to
@@ -1606,7 +1614,7 @@ test('session order: placeholders front their section; active rows bubble', () =
 })
 
 /**
- * v0.42.1: a workspace created through either add flow must land in view — the
+ * v0.44.0: a workspace created through either add flow must land in view — the
  * official browser expands the group holding the current session, but a brand
  * new workspace has no current session yet and may sit behind a collapsed
  * workspace or name folder. The two adoption paths deposit the id in one
@@ -1656,7 +1664,7 @@ test('workspace reveal: ancestor chain walker + both adopt paths arm the reveal'
     'sidebar adopt, hero adopt and the workspace row + button all reveal')
   // The browser effect expands, scrolls, and clears; flat/search cannot show a workspace row.
   assert.match(text, /const chain = revealChainOf\(tree, pending\.id\)/)
-  // v0.42.1: the reveal target is the NEW SESSION row, not the workspace
+  // v0.44.0: the reveal target is the NEW SESSION row, not the workspace
   // header; the workspace header is only the fallback after a short grace.
   assert.match(text, /actions\.setSessionsExpanded\(pending\.id, true\)/)
   assert.match(text, /const freshId = owner && currentId && \(owner\.sessionIds \|\| \[\]\)\.indexOf\(currentId\) !== -1 \? currentId : null/)
@@ -1956,7 +1964,7 @@ test('declared groups: they render even with no members to project from (v0.17.0
   // ("workspaces" + a name layer = 'slash'), picker keeps its own variable.
   assert.match(text, /const treeMode = groupBy === 'workspace' && workspaceGroupMode !== 'disk'\n          \? 'slash'\n          : workspaceGroupMode\n        const built = buildTree\(items, treeMode, wsFolders, folderOrderMap\)/,
     'the main tree passes the workspace bag and the persisted group order')
-  // v0.42.1: every caller now goes through the per-render cache, so the bag
+  // v0.44.0: every caller now goes through the per-render cache, so the bag
   // and the workspace scope are threaded in ONE place (review batch 3).
   assert.match(text, /const built = buildSessionTree\(visibleSessionsOf\(workspace\), sessionSlash, sessFolders, id\)/,
     'the session bag and its workspace scope are threaded through the cache builder')
@@ -2646,7 +2654,7 @@ test('rc.1: shipped seat occupants receive the global useSessionAccess hook', ()
   // the whole sidebar degrades to empty.
   assert.match(text, /useWorkspaces,\n        useSessionAccess,/,
     'the browser must read the rc.1 global access hook')
-  // v0.42.1 boot log: the shipped forge occupant on
+  // v0.44.0 boot log: the shipped forge occupant on
   // sidebar.session.row.trailing calls useSessions(s => …) directly; handing
   // down only useSessionAccess threw "useSessions is not a function" and
   // degraded the whole region to empty. The seat kit carries every global
@@ -2779,7 +2787,7 @@ test('v0.36.0: folder rows drag as whole groups (members retitled under the targ
     'the render hands the row both keys and the node')
 })
 
-test('v0.42.1: every reorder target carries the official 12px insert line (drawer slot retired)', () => {
+test('v0.44.0: every reorder target carries the official 12px insert line (drawer slot retired)', () => {
   const text = clientText()
   // Ported from the official UI (dsh-client-ui-workspace): SessionNodeItem's
   // rowHalf / the workspace section's workspaceGroupHalf both read the PLAIN
@@ -2942,7 +2950,7 @@ test('v0.36.4: group order is persisted per parent and drives the tree sort', ()
     'the order rides the existing persisted view store')
 })
 
-test('v0.42.1: the insert marker is an overlay — geometry is re-read every frame (no slot memory)', () => {
+test('v0.44.0: the insert marker is an overlay — geometry is re-read every frame (no slot memory)', () => {
   const text = clientText()
   // fail() lives in BetterBrowser; setFlowOpen lives in WorkspacePicker. Crossing that
   // fiber boundary threw ReferenceError on every failure path (v0.36.4 fix).
@@ -3111,7 +3119,7 @@ test('v0.36.5: a workspace row and a group row reorder into each other (mixed dr
     'a plain workspace reorder also refreshes the mixed list when the level has one')
   assert.match(text, /writeLevelOrder\(levelKey, 'w:' \+ source\.workspaceId, 'w:' \+ targetWorkspace\.workspaceId, half === 'after' \? 'after' : 'before'\)/,
     'the workspace reorder mirrors itself into the mixed list')
-  // v0.42.1 PERF: the token list is installed BEFORE the Host round trip.
+  // v0.44.0 PERF: the token list is installed BEFORE the Host round trip.
   // The Host's insertBefore rewrites the whole global registry state, so waiting
   // for it made a workspace drop settle visibly later than a session drop (one
   // record write). The optimistic write must precede the RPC in source order,
@@ -3383,7 +3391,7 @@ test('v0.36.10: level-mate groups nest, lift and survive a resting drag', () => 
 })
 
 /**
- * v0.42.1 render isolation: one broken row must cost ONE row. The only
+ * v0.44.0 render isolation: one broken row must cost ONE row. The only
  * boundary used to wrap the whole seat, so a single throwing row blanked the
  * sidebar (the useSessions boot incident: every row renders inside it). Every
  * body row now carries its own boundary with a placeholder, and a boundary

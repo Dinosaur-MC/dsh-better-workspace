@@ -55,7 +55,7 @@ window.__ModuleLoader__.load({
     // registered the projection), so the SHAPE decides: an automatic title
     // echoes the first message, so a "/" head that reads like prose
     // ("角色：资深前端/插件 UI 评审", "你是文档/账本核对员。任务 id") must not
-    // grow a folder (v0.42.1, issue #25). Only a slug-shaped head — the way a
+    // grow a folder (v0.44.0, issue #25). Only a slug-shaped head — the way a
     // user names a group — is trusted.
     const TITLE_SOURCE_KEY = 'betterWorkspace/titleSource'
     const titleSourceOf = (summary) => {
@@ -836,7 +836,7 @@ window.__ModuleLoader__.load({
         let ownerPath
         let length = -1
         for (const root of idByPath.keys()) {
-          // v0.42.1: an empty path is not a root — '' + '/' would claim every
+          // v0.44.0: an empty path is not a root — '' + '/' would claim every
           // POSIX absolute path as its child (review 2026-11-13).
           if (root !== '' && root.length > length && child !== root && child.startsWith(root + '/')) {
             ownerPath = root
@@ -1144,7 +1144,7 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * v0.42.1: the workspace created by an add flow that has not been revealed
+     * v0.44.0: the workspace created by an add flow that has not been revealed
      * yet. The sidebar's adoptDirectory and the hero picker's adoptPath live in
      * different component instances, so the intent travels through one
      * module-level slot; at most one creation is in flight. `at` bounds the
@@ -1202,7 +1202,7 @@ window.__ModuleLoader__.load({
      * compressed ws-kind folders. A collapse must drop the quota lift flags of
      * everything that just went out of sight: the official group collapse
      * discards its watermark, and the plugin's lift is the same kind of
-     * per-workspace volume state (v0.42.1).
+     * per-workspace volume state (v0.44.0).
      */
     const collectWorkspaceIds = (level, out = []) => {
       const ids = out
@@ -1231,7 +1231,7 @@ window.__ModuleLoader__.load({
     // rows the shipped watermark refuses to fold away. Idle rows beyond the
     // quota hide behind one overflow row; a lifted workspace renders
     // everything again.
-    // v0.42.1: this is a WINDOW over the list, not a re-partition of it. The
+    // v0.44.0: this is a WINDOW over the list, not a re-partition of it. The
     // shipped browser (watermarkRows / requiredWatermark) keeps list order and
     // raises the watermark to cover an attention row; it never pulls that row
     // out of place and never shows an extra row on top of the base count.
@@ -1281,7 +1281,7 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Activity bubbling (v0.42.1, user report: "为什么会话不会自动冒泡了").
+     * Activity bubbling (v0.44.0, user report: "为什么会话不会自动冒泡了").
      * Rows that are ACTIVE — running, waiting for an interaction, or running a
      * subagent — rise to the top of their node, ahead of the idle rows but
      * after the leading placeholders (the New Session row keeps its slot).
@@ -1332,7 +1332,7 @@ window.__ModuleLoader__.load({
         setExpanded: (d, key, value) => { if (!d.expanded) d.expanded = {}; d.expanded[key] = value },
         setSessionsExpanded: (d, key, value) => { if (!d.sessionsExpanded) d.sessionsExpanded = {}; d.sessionsExpanded[key] = value },
         setSessionGroupExpanded: (d, key, value) => { if (!d.sessionGroups) d.sessionGroups = {}; d.sessionGroups[key] = value },
-        // Per-session opt-OUT of "/" grouping (v0.42.1). Historical accident: the
+        // Per-session opt-OUT of "/" grouping (v0.44.0). Historical accident: the
         // pre-0.39 plugin wrote group prefixes through renameSession, so the
         // host now records those titles with source=user and no provenance
         // signal can tell them from a deliberate group. The user wants that
@@ -1513,7 +1513,7 @@ window.__ModuleLoader__.load({
           entry.keepPrefix = source === 'user'
             || (source === undefined && deliberateGroupPrefix(title))
         } else if (source !== 'user' && grafted !== undefined && prev && prev.keepPrefix === true) {
-          // v0.42.1: a USER title is authoritative. Rewriting it with a stale
+          // v0.44.0: a USER title is authoritative. Rewriting it with a stale
           // prefix would also resurrect a group the user just flattened.
           entry.keepPrefix = true
           entry.display = grafted
@@ -2112,7 +2112,7 @@ window.__ModuleLoader__.load({
       static getDerivedStateFromError(error) {
         return { failed: true, error }
       }
-      // v0.42.1: a boundary that can never clear is a permanent hole. Callers
+      // v0.44.0: a boundary that can never clear is a permanent hole. Callers
       // pass a resetKey that tracks the DATA the boundary wraps, so a row that
       // recovers on the next snapshot comes back without a reload.
       static getDerivedStateFromProps(props, state) {
@@ -2372,7 +2372,7 @@ window.__ModuleLoader__.load({
         ? E(PulseGlow, { state: pulse }, iconEl || (typeof ui.StateDot === 'function' ? E(ui.StateDot, { state: pulse, size: 10 }) : null))
         : iconEl
       return E('div', {
-        // v0.42.1: the reorder marker is the official 12px insert line —
+        // v0.44.0: the reorder marker is the official 12px insert line —
         // the SAME class pair the session rows carry, so both kinds of drag
         // look identical. The drawer slot that grew the row is retired:
         // official stability comes from never resizing the measured row.
@@ -2406,7 +2406,7 @@ window.__ModuleLoader__.load({
         ? E(PulseGlow, { state: pulse }, iconEl || (typeof ui.StateDot === 'function' ? E(ui.StateDot, { state: pulse, size: 10 }) : null))
         : iconEl
       let row = E('div', {
-        // v0.42.1: same official 12px insert line as the group and session
+        // v0.44.0: same official 12px insert line as the group and session
         // rows — one marker for every reorder target. Nothing grows.
         className: cls('bw-row', 'bw-container-row', currentInside && 'bw-row-current', menuOpen && 'menu-open', dropHalf === 'before' && 'bw-drop-before', dropHalf === 'after' && 'bw-drop-after', dropInto && 'bw-drop-into', dropInto && 'bw-drop-into-strong'),
         'data-row-key': dataRowKey,
@@ -3395,9 +3395,9 @@ window.__ModuleLoader__.load({
       const density = densityRaw === 'compact' || densityRaw === 'roomy' ? densityRaw : 'comfortable'
       // Session count badge: the shipped sidebar retired it; default OFF.
       const showCount = prefs.showCount === true
-      // Activity bubbling (v0.42.1): running / waiting / subagent rows rise to
+      // Activity bubbling (v0.44.0): running / waiting / subagent rows rise to
       // the top of their own node. Absent key = ON — the behaviour the
-      // pre-v0.42.1 quota produced by accident, now scoped to real activity.
+      // pre-v0.44.0 quota produced by accident, now scoped to real activity.
       const bubbleActive = prefs.bubbleActive !== false
       // Grouping strategy (v0.21.0, issue #7): rides the view store top-level
       // key next to groupBy/orderBy and stays browser-local, like every other
@@ -3929,6 +3929,10 @@ window.__ModuleLoader__.load({
           portal: true,
           dense: true,
           side: 'bottom',
+          // rc.2+ anchors the popover on the owner's chip element via anchorRef;
+          // older hosts position from the rect predicate. Each host ignores the
+          // prop it does not know, so both stay in the call.
+          anchorRef,
           getAnchorRect: () => (anchorRef && anchorRef.current ? anchorRef.current.getBoundingClientRect() : null),
           onClose: () => { if (typeof onClose === 'function') onClose() },
           onSelect: (id) => { if (id === HERO_ADD_ID) openFlow() },
@@ -3985,7 +3989,7 @@ window.__ModuleLoader__.load({
       // standard sources — 'sessions' becomes useSessions, 'workspaces'
       // useWorkspaces, 'sessionAccess' useSessionAccess, …). An in-row
       // reproduction has to hand the same hooks down: the shipped row seats
-      // call them directly. v0.42.1 boot log proof — the experimental forge
+      // call them directly. v0.44.0 boot log proof — the experimental forge
       // occupant (sidebar.session.row.trailing) calls useSessions(s => …)
       // and threw "useSessions is not a function" when only
       // useSessionAccess was passed (whole region degraded to empty).
@@ -4076,8 +4080,8 @@ window.__ModuleLoader__.load({
       const shared = makeSharedWrites(actions, stylingMap)
       const compactChains = prefsMap.compactChains !== false
       const statusPulse = prefsMap.statusPulse !== false
-      // Activity bubbling (v0.42.1): running / waiting / subagent rows rise to
-      // the top of their node. Absent key = ON (the behaviour the pre-v0.42.1
+      // Activity bubbling (v0.44.0): running / waiting / subagent rows rise to
+      // the top of their node. Absent key = ON (the behaviour the pre-v0.44.0
       // quota did by accident, now scoped to genuinely active rows).
       const bubbleActive = prefsMap.bubbleActive !== false
       // Session-action surface gate (v0.20.0): the hover quick buttons. The
@@ -4302,7 +4306,7 @@ window.__ModuleLoader__.load({
 
       // v0.30.2 conversation-following titles: when an automatic rename
       // replaces only the leaf, the remembered display (user group prefix +
-      // fresh leaf) keeps the row where the user put it. v0.42.1 gates that on
+      // fresh leaf) keeps the row where the user put it. v0.44.0 gates that on
       // provenance: only a prefix LEARNED FROM A USER-AUTHORED title may be
       // grafted (entry.keepPrefix), and a user rename on the wire always wins
       // verbatim — the old shape-only rule kept re-attaching a prefix the host
@@ -4442,7 +4446,7 @@ window.__ModuleLoader__.load({
       React.useEffect(() => { dragStateRef.current = drag }, [drag])
       React.useEffect(() => {
         const onKey = (event) => { if (event.key === 'Escape') dragCancelledRef.current = true }
-        // v0.42.1: the escape flag belongs to ONE gesture. Only the folder and
+        // v0.44.0: the escape flag belongs to ONE gesture. Only the folder and
         // workspace dragEnds used to reset it, so one Escape poisoned the NEXT
         // drag: a resting workspace drag was then skipped as "cancelled" and
         // the user saw a drop that did nothing. Every gesture starts clean.
@@ -4760,7 +4764,7 @@ window.__ModuleLoader__.load({
       // Age-filtered view of a workspace: the single source shared by the row
       // list, its count badge and the "only archived" visibility test.
       const visibleSessionsOf = (workspace) => filterSessionsByAge(sessionsOf(workspace), sessionAgeDays, currentId, searching)
-      // v0.42.1 PERF — one session tree per workspace per render. The count
+      // v0.44.0 PERF — one session tree per workspace per render. The count
       // badge, the rows themselves, the collapsed-pulse relay and the
       // search/new-group walks all ask for the SAME tree; on a ticking session
       // snapshot (running status refreshes several times a second) they used to
@@ -5326,7 +5330,7 @@ window.__ModuleLoader__.load({
       // a session onto a sub-group row is a pure rename and stays available
       // without it. When the service lacks the action, reorder falls back to the
       // browser-local flat order (sessionOrder) — so reorder is ALWAYS
-      // available. v0.42.1: the old `canReorderSessions` constant and its
+      // available. v0.44.0: the old `canReorderSessions` constant and its
       // three guards were dead code that read like a capability probe
       // (review 2026-11-13).
 
@@ -5929,7 +5933,7 @@ window.__ModuleLoader__.load({
             ? nextWorkspaceAfter(targetWorkspace.folderPath || '', targetWorkspace.workspaceId)
             : targetWorkspace.workspaceId)
         const levelKey = targetWorkspace.levelKey || ''
-        // v0.42.1 PERF — "sorting workspaces lags much more than sorting
+        // v0.44.0 PERF — "sorting workspaces lags much more than sorting
         // sessions". Once a level carries a stored token list the tree renders
         // from that list, so the Host client model's own optimistic insert (it
         // installs the new registry order before its RPC resolves) cannot move
@@ -5950,7 +5954,7 @@ window.__ModuleLoader__.load({
           // v0.36.5: once a level carries a MIXED list (it interleaves a bare
           // workspace with its groups), the registry edit above no longer
           // moves the row — rewrite the list too, keeping every other token.
-          // v0.42.1: only when the drop could not install it up front (a
+          // v0.44.0: only when the drop could not install it up front (a
           // registry-ordered level needs no write at all, and a re-group drop
           // moves the level, so its tokens are only known once the rename lands).
           .then(() => {
@@ -6915,7 +6919,7 @@ window.__ModuleLoader__.load({
         const rowKey = el.key != null ? String(el.key) : 'row-' + index
         bodyRowKeys.push(rowKey)
         const row = React.cloneElement(el, { 'data-row-key': rowKey, dataRowKey: rowKey })
-        // v0.42.1: one broken row costs ONE row. The seat boundary alone
+        // v0.44.0: one broken row costs ONE row. The seat boundary alone
         // blanked the entire sidebar (the useSessions incident: every row
         // renders inside it), so each row gets its own boundary with a
         // placeholder that keeps a data-row-key for the reveal and FLIP paths.
@@ -6931,7 +6935,7 @@ window.__ModuleLoader__.load({
         }, row)
       })
 
-      // v0.42.1: reveal a workspace created through either add flow. The
+      // v0.44.0: reveal a workspace created through either add flow. The
       // official browser expands the group that holds the CURRENT session; a
       // brand-new workspace has no current session yet, so the same intent is
       // pinned here — expand the ancestors hiding it, then bring its row into
@@ -6951,7 +6955,7 @@ window.__ModuleLoader__.load({
           if (step.kind === 'ws') actions.setSessionsExpanded(step.id, true)
           else actions.setExpanded(step.idPath, true)
         }
-        // v0.42.1: the row the user wants in view is the NEW SESSION, not the
+        // v0.44.0: the row the user wants in view is the NEW SESSION, not the
         // workspace header. startSession makes it current, and the shipped
         // blank row is drawn only while current — so a current session that
         // belongs to this workspace is exactly the one we just created.
@@ -6995,7 +6999,7 @@ window.__ModuleLoader__.load({
         const ungroupItem = { id: 'move-out', label: t('menu.moveOutGroup'), icon: icon('IconRightUpOutline16', 16) }
         const sgroupItems = sessionSlash ? [groupItem] : []
         const sessionUngroupItems = sessionSlash && payload && payload.allowGroups !== false && groupPrefixOf(String(payload.title || '')) !== '' ? [ungroupItem] : []
-        // v0.42.1: a title that carries a "/" always offers the flat switch,
+        // v0.44.0: a title that carries a "/" always offers the flat switch,
         // grouped or not. Legacy mis-groups (the pre-0.39 plugin wrote prefixes
         // through renameSession, so the host records them as source=user) have
         // no provenance signal left — this is the non-destructive way back:
@@ -7717,9 +7721,9 @@ window.__ModuleLoader__.load({
         dialogElement,
         (ctx !== null && typeof ui.Menu === 'function') ? E(ui.Menu, {
           // Right-click opens the SAME menu surface the official ⋯ button
-          // renders (primitives Menu, portal, dense): getAnchorRect feeds
-          // the event coordinates as the anchor rect — portal mode positions
-          // from it directly, no in-place wrapper needed.
+          // renders (primitives Menu, portal, dense): the event coordinates
+          // are the anchor point on rc.2+ (anchorPoint) and the anchor rect on
+          // older hosts — no in-place wrapper needed either way.
           open: true,
           onClose: () => setCtx(null),
           items: menuEntries(),
@@ -7727,6 +7731,9 @@ window.__ModuleLoader__.load({
           align: 'start',
           dense: true,
           portal: true,
+          // rc.2+ positions the popup from the captured client point; older
+          // hosts use the rect predicate. Each ignores the other prop.
+          anchorPoint: { x: ctx.x, y: ctx.y },
           getAnchorRect: () => new DOMRect(ctx.x, ctx.y, 0, 0),
         }) : (ctx !== null ? E('div', {
           className: 'bw-ctx-overlay',
@@ -7857,7 +7864,7 @@ window.__ModuleLoader__.load({
       // ($mount) on its own child fiber. v0.32.0's strict ctx.get ran before
       // the gateway went ACTIVE and read undefined; v0.32.1 then read the
       // property chain from a fiber outside the provider subtree, which threw.
-      // v0.42.1 retires the property probe entirely: reading a possibly-absent
+      // v0.44.0 retires the property probe entirely: reading a possibly-absent
       // service off the Context proxy raises a plugin-attributed stack every
       // boot (invariant 9), and the soft inject below covers the late case
       // anyway. NO hard inject either (the optional-service lesson: a service
@@ -7980,7 +7987,7 @@ window.__ModuleLoader__.load({
             }
             // The flat switch is offered for ANY title carrying a "/", which is
             // the only way a legacy mis-group (source=user, no provenance) can
-            // be undone without renaming it (v0.42.1).
+            // be undone without renaming it (v0.44.0).
             if (bridge.slashes && bridge.slashes.session && bridge.groupPrefix && bridge.groupPrefix(title) !== '') {
               const flatNow = !!(bridge.flatOf && bridge.flatOf(target.sessionId))
               actions.push({
@@ -8329,7 +8336,7 @@ window.__ModuleLoader__.load({
         // Manual renames clear a grafted display (see renameByUser).
         forgetDisplay: (id) => {
           const entry = titleCache.byId[id]
-          // v0.42.1: keepPrefix must go with the display. Leaving it behind
+          // v0.44.0: keepPrefix must go with the display. Leaving it behind
           // let the NEXT automatic rename graft the prefix the user just
           // flattened away (the row then jumped back into an old group).
           if (entry && (entry.display !== undefined || entry.keepPrefix === true)) {

@@ -2,12 +2,20 @@
 
 > 倒序排列,新版本条目在最上面。条目格式:`## vX.Y.Z — YYYY-MM-DD` + 类型(feat / fix / docs / chore)+ 要点 + 相关链接。
 > 纪律见 AGENTS.md「变更记录纪律」:发版前先更新本文件并随版本提交;事故复盘、复现与真机验证记录也记在这里。
-## v0.42.1 — 2026-11-11
+## v0.44.0 — 2026-11-17
 
 **类型**:fix + feat + perf(会话配额改为窗口语义并逐段展开、缩进与配色贴近官方、拖拽指示器统一为官方插入线、工作区排序即时落位、自动标题不再造分组、新建会话定位、逐会话退出 / 分组)
+**版本号**:本地未发布的 v0.42.1 批与上游已发布的 v0.43.0 撞号,按版本纪律折叠为 **v0.44.0**(含上游 `7a36604` 的 Menu 锚点适配);`package.json` / `dsh.plugin.json` / 本文件三处已同步,仓内 `v0.42.1` 字样一并改写。
+
+### fix(适配 dsh 0.2.2-rc.2 / rc.3 的 Menu 锚点)
+- **宿主契约变化**:官方 primitives `Menu` 在 rc.2 删除了 `getAnchorRect`,改用 `anchorRef`(元素锚点)与 `anchorPoint`(坐标锚点)。本机宿主实测是 **0.2.2-rc.3**(桌面端 `@deepseek-ai/dsh-desktop` 0.2.2-rc.3):web 前端 bundle 里 `getAnchorRect` 出现 **0 次**,`Menu` 的参数表只有 `anchorRef` / `anchorPoint` ⇒ 旧写法在本机不再被读取。
+- **失效形态(源码取证)**:两套新锚点都缺席时,`Menu` 把 `--dsh-menu-trigger-<id>` 的 anchor-name 设在它自身那个零尺寸 span 上(span 留在渲染位置),portal 的列表用 `position-anchor` 相对它定位 ⇒ 弹层落在 span 所在处,而不是 owner chip / 鼠标点。本插件两处弹层(对话空态工作区选择器、工作区与会话右键菜单)此前都只发 `getAnchorRect`。
+- **修法**:两处同时发送新旧两套 prop —— hero 选择器把 owner chip 的 ref 传给 `anchorRef`,右键菜单把事件坐标传给 `anchorPoint: { x: ctx.x, y: ctx.y }`;`getAnchorRect` 全部保留,rc.1 宿主照旧按 rect 定位,两个宿主各自忽略不认识的 prop。
+- **与上游对齐**:上游 v0.43.0(`7a36604`)做了同一处适配;本仓把它并入未发布的 v0.44.0 批,不单独开号(版本纪律:本地未发布改动不逐轮递增 patch)。
+- **验证**:`node --check src/client.js` 通过;`node tests/smoke.mjs` **99 项全绿**;冒烟新增两条断言(hero 切片含 `anchorRef,`、右键菜单含 `anchorPoint: { x: ctx.x, y: ctx.y },`)。真机弹层位置需刷新窗口后目视确认(客户端 bundle 在页面加载时取)。
 ### fix(host 半不再卡在「等待依赖」)
 - **症状**:插件卡片状态显示「等待依赖」(en *Waiting for dependencies*),开关在、客户端侧栏照常工作,但宿主半从未执行——没有 Config 面、没有 `betterWorkspace/titleSource` 投影。
-- **根因(宿主源码取证)**:状态文案来自 host 的插件盘点,直接读 cordis 纤维的 state;0 = PENDING(apply 未跑)。v0.42.1 评审收尾把 host 半写成 `export const inject = { optional: ['sessionProjections'] }`,而本代 cordis 的 `Inject.resolve` 只认「服务名数组」或「名 → 拦截配置对象」两种形状,不存在 `{ required, optional }`;对象形态会被逐键展开,于是插件实际在等一个**名叫 `optional` 的服务**。该服务无人提供 ⇒ `_refresh()` 的 epoch 恒为 INACTIVE(与初始值相等)⇒ `_setEpoch` 判等直接返回 ⇒ 纤维停在 state 0,永不进入 LOADING/ACTIVE。硬数组注入会以同样方式在服务缺席时挂起。
+- **根因(宿主源码取证)**:状态文案来自 host 的插件盘点,直接读 cordis 纤维的 state;0 = PENDING(apply 未跑)。v0.44.0 评审收尾把 host 半写成 `export const inject = { optional: ['sessionProjections'] }`,而本代 cordis 的 `Inject.resolve` 只认「服务名数组」或「名 → 拦截配置对象」两种形状,不存在 `{ required, optional }`;对象形态会被逐键展开,于是插件实际在等一个**名叫 `optional` 的服务**。该服务无人提供 ⇒ `_refresh()` 的 epoch 恒为 INACTIVE(与初始值相等)⇒ `_setEpoch` 判等直接返回 ⇒ 纤维停在 state 0,永不进入 LOADING/ACTIVE。硬数组注入会以同样方式在服务缺席时挂起。
 - **修法**:删除 `inject` 导出,改由 `ctx.inject(['sessionProjections'], attempt)` 建**子纤维**承接可选服务——只有子纤维等待,插件行立刻激活,`registerTitleSource` 的「服务缺席、退回显示层兜底」分支保持可达;普通上下文(测试)仍直接尝试注册。冒烟断言改为「无 inject 导出 + 存在该子纤维调用」。
 - 生效需要宿主重载该插件(重启 DSH 或禁用/启用一次),已在运行的纤维不会自己离开 PENDING。
 
@@ -83,12 +91,12 @@
 
 ### chore(评审收尾:CI 测试门禁、README 与可选注入)
 - **CI 门禁**:新增 `.github/workflows/ci.yml`,每次 push 到 main 与每个 PR 都跑冒烟(Node 24)。仓库不提交 lockfile(无运行时依赖、两个 dev peer),`npm ci` 不可用,因此用 `npm install --no-package-lock --no-audit --no-fund`;发布工作流不变,仍只在 Release published 后触发 npm 发布。
-- **README 补 v0.42.1**:「其余亮点」新增五条——配额按节点独立与逐次展开、行样式贴近官方(缩进 / 动作区 / 自动色只染图标)、自动标题更可靠与逐会话「不按 / 分组」开关、新建即定位、渲染安全网与 CI;不再停留在 v0.42.0 的功能面。
+- **README 补 v0.44.0**:「其余亮点」新增五条——配额按节点独立与逐次展开、行样式贴近官方(缩进 / 动作区 / 自动色只染图标)、自动标题更可靠与逐会话「不按 / 分组」开关、新建即定位、渲染安全网与 CI;不再停留在 v0.42.0 的功能面。
 - **host 半注入改为可选**:`src/index.js` 的 `inject` 由硬数组改为 `{ optional: ['sessionProjections'] }`;`registerTitleSource` 读服务改走 `ctx.get('sessionProjections')`(只有测试用的普通对象 ctx 才退回属性读取),服务缺席时显式返回 false。此前硬注入会让「服务缺席、退回显示层兜底」分支不可达,与冒烟里的降级断言自相矛盾;现在两条路径都可达。
 - 冒烟新增 CI 门禁断言(触发面、Node 24、无 lockfile 的安装方式、不跑 `npm ci`);host 半测试补可选服务缺席路径与 `inject` 形状。
 ### fix(排序:占位行恒前置、活动会话冒泡)
 - **占位行恒前置,对齐官方 `sectionMembers`**:`pinnedPartition` 此前在没有任何置顶行时提前 return,manual 序下「新会话」占位行会落在列表中间;官方 `sectionMembers(members, pinned, archived)` 的结构是 `[...placeholders, ...leading, ...rest]`,与有没有置顶行无关。现在恒返回「占位 → 置顶 → 其余」。
-- **活动会话冒泡以显示层身份回归**:v0.42.1 把 keep 集前插改成纯窗口后,运行中 / 等你审批 / 子代理运行的会话不再浮到节点顶部(用户确认要恢复)。新增纯函数 `bubbleRows(rows, enabled)`:留住行首占位行,把 `running || pending || subagents > 0` 的行前置,其余保序;它跑在 watermark 裁剪**之后**,只改顺序、绝不改可见行数(此前「展开 5 条却看到 6 条」正是排序与限额缠绕所致)。打开但空闲的会话永不冒泡。
+- **活动会话冒泡以显示层身份回归**:v0.44.0 把 keep 集前插改成纯窗口后,运行中 / 等你审批 / 子代理运行的会话不再浮到节点顶部(用户确认要恢复)。新增纯函数 `bubbleRows(rows, enabled)`:留住行首占位行,把 `running || pending || subagents > 0` 的行前置,其余保序;它跑在 watermark 裁剪**之后**,只改顺序、绝不改可见行数(此前「展开 5 条却看到 6 条」正是排序与限额缠绕所致)。打开但空闲的会话永不冒泡。
 - 设置卡新增开关「活动会话置顶」(`prefs.bubbleActive`,默认开;视图偏好留在浏览器本地 store),关掉即恢复纯列表序。
 
 ### 验证
